@@ -461,36 +461,69 @@ def _kosis_item_name(row: dict) -> str:
             row.get("ITM_NM") or row.get("itmNm") or "")
 
 
-def _kosis_list_price_tables() -> list[str]:
-    """KOSIS 통계목록 API로 물가 관련 테이블 ID 목록을 탐색한다."""
+def _kosis_browse(parent_id: str, vw_cd: str = "MT_ZTITLE") -> list[dict]:
+    """KOSIS 통계목록 API에서 특정 parentListId의 자식 노드 조회."""
     import urllib.request, urllib.parse, json as _json
 
-    found = []
-    # 주제별 분류(MT_ZTITLE)에서 물가 카테고리 탐색
-    # parentListId 후보: 경제 대주제 아래 '물가·가격' 소주제
-    for parent_id in ("K", "I", "J", "104", "105", "106"):
-        try:
-            qs = urllib.parse.urlencode({
-                "method":       "getList",
-                "apiKey":       _KOSIS_KEY,
-                "vwCd":         "MT_ZTITLE",
-                "parentListId": parent_id,
-                "format":       "json",
-                "jsonVD":       "Y",
-            })
-            url = f"https://kosis.kr/openapi/statisticsList.do?{qs}"
-            req = urllib.request.Request(url, headers={"User-Agent": "iran-oil-app/1.0"})
-            with urllib.request.urlopen(req, timeout=10) as r:
-                data = _json.loads(r.read().decode("utf-8"))
-            if isinstance(data, list):
-                for item in data:
-                    nm  = item.get("TBL_NM", "") or item.get("LIST_NM", "")
-                    tid = item.get("TBL_ID", "")
-                    if tid and any(kw in nm for kw in ("생활물가", "소비자물가", "물가지수")):
-                        found.append(tid)
-        except Exception:
-            pass
-    return found
+    params: dict = {"method": "getList", "apiKey": _KOSIS_KEY,
+                    "vwCd": vw_cd, "format": "json", "jsonVD": "Y"}
+    if parent_id:
+        params["parentListId"] = parent_id
+    try:
+        url = f"https://kosis.kr/openapi/statisticsList.do?{urllib.parse.urlencode(params)}"
+        req = urllib.request.Request(url, headers={"User-Agent": "iran-oil-app/1.0"})
+        with urllib.request.urlopen(req, timeout=10) as r:
+            data = _json.loads(r.read().decode("utf-8"))
+        return data if isinstance(data, list) else []
+    except Exception:
+        return []
+
+
+def _kosis_list_price_tables() -> list[str]:
+    """KOSIS 통계목록 트리를 탐색해 생활물가/소비자물가 품목별 테이블 ID 목록 반환."""
+    found_tbls: list[str] = []
+    found_nodes: list[str] = []
+
+    # 1단계: 최상위 카테고리 조회 (parentListId 없음)
+    roots = _kosis_browse("")
+    if not roots:
+        roots = _kosis_browse("0")
+
+    # 물가 관련 최상위 노드 찾기
+    price_roots: list[dict] = []
+    for node in roots:
+        nm  = node.get("TBL_NM", "") or node.get("LIST_NM", "") or node.get("NM", "")
+        lid = node.get("LIST_ID", "") or node.get("TBL_ID", "")
+        if any(kw in nm for kw in ("물가", "가격")):
+            price_roots.append(node)
+            found_nodes.append(f"{lid}:{nm}")
+
+    # 2단계: 물가 노드 아래 탐색 (최대 2레벨)
+    for root in price_roots:
+        lid = root.get("LIST_ID", "") or root.get("TBL_ID", "")
+        if not lid:
+            continue
+        children = _kosis_browse(lid)
+        for child in children:
+            cnm  = child.get("TBL_NM", "") or child.get("LIST_NM", "") or child.get("NM", "")
+            ctid = child.get("TBL_ID", "")
+            clid = child.get("LIST_ID", "")
+            found_nodes.append(f"{ctid or clid}:{cnm}")
+            if ctid and any(kw in cnm for kw in ("생활물가", "품목")):
+                found_tbls.append(ctid)
+            # 3레벨 탐색
+            if clid and not ctid:
+                grandchildren = _kosis_browse(clid)
+                for gc in grandchildren:
+                    gnm  = gc.get("TBL_NM", "") or gc.get("LIST_NM", "")
+                    gtid = gc.get("TBL_ID", "")
+                    if gtid:
+                        found_nodes.append(f"{gtid}:{gnm}")
+                        if any(kw in gnm for kw in ("생활물가", "품목")):
+                            found_tbls.append(gtid)
+
+    _cache["kosis_browse_nodes"] = found_nodes[:30]
+    return found_tbls
 
 
 def _load_prices_from_kosis() -> dict | None:
@@ -1072,6 +1105,7 @@ def get_data_source():
         "kosis_prices_sample_names":  _cache.get("kosis_prices_sample_names"),
         "kosis_prices_matched_keys":  _cache.get("kosis_prices_matched_keys"),
         "kosis_list_found_tbls":      _cache.get("kosis_list_found_tbls"),
+        "kosis_browse_nodes":         _cache.get("kosis_browse_nodes"),
         "kosis_prices_err":           _cache.get("kosis_prices_err"),
         "kosis_cpi_err":              _cache.get("kosis_cpi_err"),
         "data_sources": {
