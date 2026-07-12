@@ -45,11 +45,16 @@ _KOSIS_CPI_ORG    = os.environ.get("KOSIS_CPI_ORG",    "101")
 _KOSIS_CPI_TBL    = os.environ.get("KOSIS_CPI_TBL",    "DT_1J22001")  # 소비자물가지수(2020=100)
 
 # KOSIS 응답 품목명 → 내부 품목명 매핑
+# 통계청은 '계란' 표기 사용, '달걀'과 동일
 _KOSIS_NAME_MAP = {
     "라면": "라면", "두부": "두부", "우유": "우유",
-    "달걀": "달걀", "식용유": "식용유", "생수": "생수",
-    "전기료": "전기료", "도시가스": "도시가스",
-    "휘발유": "휘발유", "택배이용료": "택배이용료",
+    "달걀": "달걀", "계란": "달걀",        # 통계청은 '계란' 표기
+    "식용유": "식용유",
+    "생수": "생수",
+    "전기료": "전기료", "전기요금": "전기료",
+    "도시가스": "도시가스", "가스요금": "도시가스",
+    "휘발유": "휘발유",
+    "택배이용료": "택배이용료", "택배": "택배이용료",
     "샴푸": "샴푸", "화장지": "화장지",
 }
 _ALGO   = "HS256"
@@ -497,16 +502,23 @@ def _load_prices_from_kosis() -> dict | None:
     # 1순위: 환경변수로 직접 지정한 테이블
     # 2순위: 통계목록 API로 탐색한 테이블들
     # 3순위: DT_1J22003 인근 번호 일괄 시도 (DT_1J22003 = 시도별이므로 제외)
-    env_tbl = _KOSIS_PRICES_TBL if _KOSIS_PRICES_TBL != "DT_1J22003" else ""
+    env_tbl  = _KOSIS_PRICES_TBL if _KOSIS_PRICES_TBL not in ("DT_1J22003", "DT_1J22017") else ""
     api_tbls = _kosis_list_price_tables()
-    seq_tbls = [f"DT_1J2200{i}" for i in range(4, 10)] + \
-               [f"DT_1J2201{i}" for i in range(0, 10)] + \
-               [f"DT_1J2202{i}" for i in range(0, 5)]
+    # DT_1J22003=시도별CPI, DT_1J22017=COICOP분류CPI → 제외하고 나머지 순차 탐색
+    exclude  = {"DT_1J22003", "DT_1J22017"}
+    seq_tbls = [f"DT_1J2200{i}" for i in range(4, 10)
+                if f"DT_1J2200{i}" not in exclude] + \
+               [f"DT_1J2201{i}" for i in range(0, 10)
+                if f"DT_1J2201{i}" not in exclude] + \
+               [f"DT_1J2202{i}" for i in range(0, 10)] + \
+               [f"DT_1J2203{i}" for i in range(0, 10)] + \
+               [f"DT_1J2204{i}" for i in range(0, 10)] + \
+               [f"DT_1J2205{i}" for i in range(0, 5)]
 
     tbl_candidates = list(dict.fromkeys(
         ([env_tbl] if env_tbl else []) + api_tbls + seq_tbls
     ))
-    _cache["kosis_list_found_tbls"] = api_tbls  # 통계목록 API 탐색 결과 기록
+    _cache["kosis_list_found_tbls"] = api_tbls
 
     rows, msg = None, ""
     for tbl in tbl_candidates:
@@ -514,15 +526,17 @@ def _load_prices_from_kosis() -> dict | None:
         if candidate_rows is None:
             msg = candidate_msg
             continue
-        # 이 테이블에 품목명(라면·달걀 등)이 실제로 있는지 확인
-        sample_names = {_kosis_item_name(r) for r in candidate_rows[:50]}
-        if any(k in nm for nm in sample_names for k in _KOSIS_NAME_MAP):
+        # 이 테이블에 품목명(라면·달걀·계란 등)이 실제로 있는지 확인
+        sample_names = {_kosis_item_name(r) for r in candidate_rows[:100]}
+        matched_keys = [k for k in _KOSIS_NAME_MAP if any(k in nm for nm in sample_names)]
+        if len(matched_keys) >= 3:  # 최소 3개 키워드 매칭
             rows = candidate_rows
             _cache["kosis_prices_tbl_used"] = tbl
-            _cache["kosis_prices_sample_names"] = list(sample_names)[:10]
+            _cache["kosis_prices_sample_names"] = list(sample_names)[:15]
+            _cache["kosis_prices_matched_keys"] = matched_keys
             break
         else:
-            msg = f"{tbl} 품목 불일치 (C1_NM 샘플: {list(sample_names)[:5]})"
+            msg = f"{tbl} 품목 불일치 (매칭={matched_keys}, 샘플={list(sample_names)[:5]})"
 
     if rows is None:
         _cache["kosis_prices_err"] = msg
@@ -1056,6 +1070,7 @@ def get_data_source():
         "kosis_prices_tbl_used":      _cache.get("kosis_prices_tbl_used"),
         "kosis_cpi_tbl_used":         _cache.get("kosis_cpi_tbl_used"),
         "kosis_prices_sample_names":  _cache.get("kosis_prices_sample_names"),
+        "kosis_prices_matched_keys":  _cache.get("kosis_prices_matched_keys"),
         "kosis_list_found_tbls":      _cache.get("kosis_list_found_tbls"),
         "kosis_prices_err":           _cache.get("kosis_prices_err"),
         "kosis_cpi_err":              _cache.get("kosis_cpi_err"),
