@@ -258,21 +258,83 @@ def _get_elasticity(name: str) -> float:
     return BASE_PRICES[name]["elasticity"]
 
 
+# 이란 전쟁 시나리오 앱 기준 브렌트유 월별 기준 데이터 (2022-01 ~ 2026-06)
+# CSV 없을 때와 yfinance 실패 시 폴백으로 사용
+_OIL_FALLBACK = {
+    "2022-01": 83.0,  "2022-02": 95.0,  "2022-03": 117.0, "2022-04": 104.0,
+    "2022-05": 111.0, "2022-06": 113.0, "2022-07": 101.0, "2022-08": 95.0,
+    "2022-09": 90.0,  "2022-10": 92.0,  "2022-11": 88.0,  "2022-12": 80.0,
+    "2023-01": 83.0,  "2023-02": 83.0,  "2023-03": 77.0,  "2023-04": 82.0,
+    "2023-05": 72.0,  "2023-06": 74.0,  "2023-07": 80.0,  "2023-08": 84.0,
+    "2023-09": 92.0,  "2023-10": 87.0,  "2023-11": 82.0,  "2023-12": 77.0,
+    "2024-01": 79.0,  "2024-02": 82.0,  "2024-03": 86.0,  "2024-04": 89.0,
+    "2024-05": 83.0,  "2024-06": 83.0,  "2024-07": 84.0,  "2024-08": 79.0,
+    "2024-09": 74.0,  "2024-10": 74.0,  "2024-11": 73.0,  "2024-12": 73.0,
+    "2025-01": 79.0,  "2025-02": 75.0,  "2025-03": 72.0,  "2025-04": 66.0,
+    "2025-05": 64.0,  "2025-06": 68.0,  "2025-07": 75.0,  "2025-08": 76.0,
+    "2025-09": 72.0,  "2025-10": 70.0,  "2025-11": 72.0,  "2025-12": 74.0,
+    "2026-01": 74.0,  "2026-02": 80.0,  "2026-03": 89.0,  "2026-04": 95.0,
+    "2026-05": 102.0, "2026-06": 108.0,
+}
+
+
+def _load_oil_data() -> dict:
+    """브렌트유 월별 데이터를 로드한다. CSV → yfinance → 하드코딩 순으로 폴백."""
+    csv_path = BASE_DIR / "chart_20260607T031456.csv"
+
+    # 1) CSV 파일이 있으면 그대로 사용
+    if csv_path.exists():
+        try:
+            df = pd.read_csv(csv_path)
+            df["Date"] = pd.to_datetime(df["Date"], format="%m/%d/%Y")
+            df = df[df["Date"] >= "2022-01-01"].copy()
+            df["month"] = df["Date"].dt.to_period("M").astype(str)
+            df_monthly = df.groupby("month")["Value"].last().reset_index()
+            if not df_monthly.empty:
+                return {
+                    "months": df_monthly["month"].tolist(),
+                    "prices": df_monthly["Value"].tolist(),
+                }
+        except Exception:
+            pass
+
+    # 2) yfinance로 2022-01-01 이후 월별 데이터 다운로드
+    if _YF_AVAILABLE:
+        try:
+            ticker = yf.Ticker("BZ=F")
+            hist = ticker.history(start="2022-01-01", interval="1mo")
+            if not hist.empty:
+                hist.index = hist.index.tz_localize(None) if hist.index.tz else hist.index
+                months = hist.index.to_period("M").astype(str).tolist()
+                prices = [round(float(v), 2) for v in hist["Close"].tolist()]
+                # 하드코딩 데이터로 누락 월 보완 (특히 이란 전쟁 이후 구간)
+                month_map = dict(zip(months, prices))
+                for m, p in _OIL_FALLBACK.items():
+                    if m not in month_map:
+                        month_map[m] = p
+                sorted_months = sorted(month_map.keys())
+                return {
+                    "months": sorted_months,
+                    "prices": [month_map[m] for m in sorted_months],
+                }
+        except Exception:
+            pass
+
+    # 3) 완전 폴백: 하드코딩 데이터 사용
+    sorted_months = sorted(_OIL_FALLBACK.keys())
+    return {
+        "months": sorted_months,
+        "prices": [_OIL_FALLBACK[m] for m in sorted_months],
+    }
+
+
 def _load_data():
     global _cache
     if _cache:
         return
 
-    # 브렌트유 CSV
-    df = pd.read_csv(BASE_DIR / "chart_20260607T031456.csv")
-    df["Date"] = pd.to_datetime(df["Date"], format="%m/%d/%Y")
-    df = df[df["Date"] >= "2022-01-01"].copy()
-    df["month"] = df["Date"].dt.to_period("M").astype(str)
-    df_monthly = df.groupby("month")["Value"].last().reset_index()
-    _cache["oil"] = {
-        "months": df_monthly["month"].tolist(),
-        "prices": df_monthly["Value"].tolist(),
-    }
+    # 브렌트유 데이터: CSV → yfinance → 하드코딩 순서로 폴백
+    _cache["oil"] = _load_oil_data()
 
     # 생활물가지수 Excel
     xl = pd.read_excel(
