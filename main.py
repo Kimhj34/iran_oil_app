@@ -457,23 +457,35 @@ def _kosis_item_name(row: dict) -> str:
 
 
 def _load_prices_from_kosis() -> dict | None:
-    """KOSIS API로 생활물가지수 품목별 월별 데이터 수집.
-    환경변수 테이블 ID → 알려진 후보 ID 순으로 시도."""
+    """KOSIS API로 생활물가지수/소비자물가지수 품목별 월별 데이터 수집.
+    C1_NM에 품목명(라면·달걀 등)이 있는 테이블을 찾는다."""
     if not _KOSIS_KEY:
         return None
 
-    # 생활물가지수(2020=100) 후보 테이블 ID (환경변수 우선)
+    # 품목별 생활물가지수/소비자물가지수 후보 테이블 ID
+    # DT_1J22003 = 소비자물가지수 시도별(지역) → 품목 없음, 제외
     tbl_candidates = list(dict.fromkeys([
-        _KOSIS_PRICES_TBL,
-        "DT_1J22003", "DT_1400087", "DT_1J22002", "DT_1400080",
+        _KOSIS_PRICES_TBL if _KOSIS_PRICES_TBL != "DT_1J22003" else "",
+        "DT_1J22001", "DT_1400078", "DT_1400080",
+        "DT_1400087", "DT_1J22002", "DT_1400086",
     ]))
+    tbl_candidates = [t for t in tbl_candidates if t]
 
     rows, msg = None, ""
     for tbl in tbl_candidates:
-        rows, msg = _kosis_get(_KOSIS_PRICES_ORG, tbl, "202101")
-        if rows is not None:
+        candidate_rows, candidate_msg = _kosis_get(_KOSIS_PRICES_ORG, tbl, "202101")
+        if candidate_rows is None:
+            msg = candidate_msg
+            continue
+        # 이 테이블에 품목명(라면·달걀 등)이 실제로 있는지 확인
+        sample_names = {_kosis_item_name(r) for r in candidate_rows[:50]}
+        if any(k in nm for nm in sample_names for k in _KOSIS_NAME_MAP):
+            rows = candidate_rows
             _cache["kosis_prices_tbl_used"] = tbl
+            _cache["kosis_prices_sample_names"] = list(sample_names)[:10]
             break
+        else:
+            msg = f"{tbl} 품목 불일치 (C1_NM 샘플: {list(sample_names)[:5]})"
 
     if rows is None:
         _cache["kosis_prices_err"] = msg
@@ -495,6 +507,7 @@ def _load_prices_from_kosis() -> dict | None:
             item_month.setdefault(matched, {})[month] = val
 
     if len(item_month) < 5:  # 품목 5개 미만이면 잘못된 응답
+        _cache["kosis_prices_err"] = f"품목 매칭 {len(item_month)}개만 성공 (5개 이상 필요)"
         return None
 
     months = sorted({m for d in item_month.values() for m in d})
@@ -517,16 +530,18 @@ def _load_prices_from_kosis() -> dict | None:
 
 
 def _load_cpi_from_kosis() -> dict | None:
-    """KOSIS API로 소비자물가지수 총지수 월별 데이터 수집.
-    환경변수 테이블 ID → 알려진 후보 ID 순으로 시도."""
+    """KOSIS API로 소비자물가지수 총지수(전국) 월별 데이터 수집.
+    DT_1J22003 = 소비자물가지수(2020=100) 시도별 → 전국 행만 필터."""
     if not _KOSIS_KEY:
         return None
 
-    # 소비자물가지수(2020=100) 후보 테이블 ID
+    # DT_1J22003이 소비자물가지수 시도별 테이블임을 확인 완료
     tbl_candidates = list(dict.fromkeys([
-        _KOSIS_CPI_TBL,
-        "DT_1J22001", "DT_1400078", "DT_1J22004", "DT_1400079",
+        "DT_1J22003",
+        _KOSIS_CPI_TBL if _KOSIS_CPI_TBL != "DT_1J22003" else "",
+        "DT_1J22001", "DT_1400078", "DT_1400079",
     ]))
+    tbl_candidates = [t for t in tbl_candidates if t]
 
     rows, msg = None, ""
     for tbl in tbl_candidates:
@@ -544,12 +559,15 @@ def _load_cpi_from_kosis() -> dict | None:
         prd = row.get("PRD_DE", "")
         if len(prd) != 6:
             continue
+        # 시도별 테이블: 전국(C1_NM='전국') 행만 사용
+        area = row.get("C1_NM", "")
+        if area and area not in ("전국", ""):
+            continue
         month = f"{prd[:4]}-{prd[4:]}"
         try:
             val = float(row.get("DT", ""))
         except (ValueError, TypeError):
             continue
-        # 월별 첫 번째 값만 사용 (총지수 테이블은 월 1행)
         if month not in month_vals:
             month_vals[month] = val
 
@@ -998,10 +1016,11 @@ def get_data_source():
         "kosis_prices_tbl":  f"{_KOSIS_PRICES_ORG}/{_KOSIS_PRICES_TBL}",
         "kosis_cpi_tbl":     f"{_KOSIS_CPI_ORG}/{_KOSIS_CPI_TBL}",
         "kosis_sample":           kosis_sample,
-        "kosis_prices_tbl_used":  _cache.get("kosis_prices_tbl_used"),
-        "kosis_cpi_tbl_used":     _cache.get("kosis_cpi_tbl_used"),
-        "kosis_prices_err":       _cache.get("kosis_prices_err"),
-        "kosis_cpi_err":          _cache.get("kosis_cpi_err"),
+        "kosis_prices_tbl_used":      _cache.get("kosis_prices_tbl_used"),
+        "kosis_cpi_tbl_used":         _cache.get("kosis_cpi_tbl_used"),
+        "kosis_prices_sample_names":  _cache.get("kosis_prices_sample_names"),
+        "kosis_prices_err":           _cache.get("kosis_prices_err"),
+        "kosis_cpi_err":              _cache.get("kosis_cpi_err"),
         "data_sources": {
             "oil":    sources.get("oil",    "unknown"),
             "prices": sources.get("prices", "unknown"),
