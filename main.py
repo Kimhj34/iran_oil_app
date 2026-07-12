@@ -406,52 +406,80 @@ _CPI_VALUES_FB = _lp([(0,104),(5,107),(11,110),(23,113),(35,116),(47,118),(52,12
 
 # ── KOSIS API 헬퍼 ──────────────────────────────────────────────────────────
 
-def _kosis_get(org_id: str, tbl_id: str, start: str = "202101") -> tuple[list | None, str]:
-    """KOSIS Open API 단순 조회. (row 리스트 또는 None, 상태 메시지) 반환.
-    objL2 없이 먼저 시도하고, itmId 변형도 순서대로 시도한다."""
+def _kosis_raw(endpoint: str, params: dict) -> list | None:
+    """KOSIS API 호출 공통 유틸. 성공 시 list, 실패/오류 시 None."""
     import urllib.request, urllib.parse, json as _json
+    try:
+        url = f"{endpoint}?{urllib.parse.urlencode(params)}"
+        req = urllib.request.Request(url, headers={"User-Agent": "iran-oil-app/1.0"})
+        with urllib.request.urlopen(req, timeout=20) as r:
+            data = _json.loads(r.read().decode("utf-8"))
+        if isinstance(data, dict):
+            return None
+        if isinstance(data, list) and data and "err" in data[0]:
+            return None
+        return data if isinstance(data, list) and data else None
+    except Exception:
+        return None
+
+
+def _kosis_get_meta(org_id: str, tbl_id: str) -> dict:
+    """KOSIS 통계메타 조회 → 유효한 itmId·objL1 코드 반환."""
+    import urllib.request, urllib.parse, json as _json
+    result: dict = {"itmIds": [], "objL1s": []}
+    base = {"apiKey": _KOSIS_KEY, "orgId": org_id, "tblId": tbl_id,
+            "format": "json", "jsonVD": "Y"}
+    # 방법1: statisticsMeta.do (항목 목록)
+    for meta_url, method_param in [
+        ("https://kosis.kr/openapi/statisticsMeta.do", "getList"),
+        ("https://kosis.kr/openapi/statisticsList.do",  "getStatsMeta"),
+    ]:
+        params = {**base, "method": method_param}
+        rows = _kosis_raw(meta_url, params)
+        if rows:
+            result["raw_meta"] = rows[:5]
+            result["itmIds"]   = list({r.get("ITM_ID","") for r in rows if r.get("ITM_ID")})[:10]
+            result["objL1s"]   = list({r.get("OBJ_ID","") for r in rows if r.get("OBJ_ID")})[:10]
+            break
+    return result
+
+
+def _kosis_get(org_id: str, tbl_id: str, start: str = "202101") -> tuple[list | None, str]:
+    """KOSIS Open API 단순 조회. (row 리스트 또는 None, 상태 메시지) 반환."""
+    import urllib.parse
 
     end = datetime.now().strftime("%Y%m")
+    base = {"method": "getList", "apiKey": _KOSIS_KEY, "objL1": "ALL",
+            "format": "json", "jsonVD": "Y", "prdSe": "M",
+            "startPrdDe": start, "endPrdDe": end, "orgId": org_id, "tblId": tbl_id}
 
-    # itmId 후보: 통계청 테이블마다 사용 ID가 다름
-    # T10=지수(시도별), T=지수(연쇄방식), ALL=전체, T20=전년동월비
+    last_err = f"{tbl_id} 모든 시도 실패"
+
+    # 1) Param API — itmId 후보 순서대로 시도
+    param_ep = "https://kosis.kr/openapi/Param/statisticsParameterData.do"
     for itm_id in ("T10", "T", "ALL", "T20", "T30"):
-        base_params = {
-            "method":     "getList",
-            "apiKey":     _KOSIS_KEY,
-            "itmId":      itm_id,
-            "objL1":      "ALL",
-            "format":     "json",
-            "jsonVD":     "Y",
-            "prdSe":      "M",
-            "startPrdDe": start,
-            "endPrdDe":   end,
-            "orgId":      org_id,
-            "tblId":      tbl_id,
-        }
-        url = ("https://kosis.kr/openapi/Param/statisticsParameterData.do?"
-               + urllib.parse.urlencode(base_params))
-        try:
-            req = urllib.request.Request(url, headers={"User-Agent": "iran-oil-app/1.0"})
-            with urllib.request.urlopen(req, timeout=20) as r:
-                data = _json.loads(r.read().decode("utf-8"))
+        rows = _kosis_raw(param_ep, {**base, "itmId": itm_id})
+        if rows is not None:
+            return rows, f"OK Param/{tbl_id} itmId={itm_id} ({len(rows)}행)"
+        last_err = f"Param API 오류(itmId={itm_id}) for {tbl_id}"
 
-            if isinstance(data, dict):
-                err_msg = data.get("errMsg") or data.get("err") or str(data)
-                last_err = f"API 오류(itmId={itm_id}): {err_msg}"
-                continue  # 다음 itmId 시도
-            if isinstance(data, list) and data and "err" in data[0]:
-                err_msg = data[0].get("errMsg") or data[0].get("err") or str(data[0])
-                last_err = f"API 오류(itmId={itm_id}): {err_msg}"
-                continue
-            if not isinstance(data, list) or len(data) == 0:
-                last_err = f"빈 응답(itmId={itm_id})"
-                continue
+    # 2) Share API 엔드포인트 (statisticsData.do) — Param API 실패 시 대안
+    share_ep = "https://kosis.kr/openapi/statisticsData.do"
+    for itm_id in ("T10", "T", "ALL"):
+        rows = _kosis_raw(share_ep, {**base, "itmId": itm_id})
+        if rows is not None:
+            return rows, f"OK Share/{tbl_id} itmId={itm_id} ({len(rows)}행)"
+        last_err = f"Share API 오류(itmId={itm_id}) for {tbl_id}"
 
-            return data, f"OK itmId={itm_id} ({len(data)}행)"
-        except Exception as e:
-            last_err = f"요청 실패(itmId={itm_id}): {e}"
-            continue
+    # 3) 메타데이터 조회로 실제 itmId 확인 후 재시도
+    meta = _kosis_get_meta(org_id, tbl_id)
+    _cache[f"kosis_meta_{tbl_id}"] = meta
+    for itm_id in meta.get("itmIds", []):
+        for ep in (param_ep, share_ep):
+            rows = _kosis_raw(ep, {**base, "itmId": itm_id})
+            if rows is not None:
+                return rows, f"OK meta/{tbl_id} itmId={itm_id} ({len(rows)}행)"
+        last_err = f"meta 시도 실패(itmId={itm_id}) for {tbl_id}"
 
     return None, last_err
 
@@ -1105,6 +1133,7 @@ def get_data_source():
         "kosis_browse_nodes":         _cache.get("kosis_browse_nodes"),
         "kosis_prices_err":           _cache.get("kosis_prices_err"),
         "kosis_cpi_err":              _cache.get("kosis_cpi_err"),
+        "kosis_meta_DT_1J22005":      _cache.get("kosis_meta_DT_1J22005"),
         "data_sources": {
             "oil":    sources.get("oil",    "unknown"),
             "prices": sources.get("prices", "unknown"),
