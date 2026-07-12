@@ -535,21 +535,17 @@ def _load_prices_from_kosis() -> dict | None:
     # 1순위: 환경변수로 직접 지정한 테이블
     # 2순위: 통계목록 API로 탐색한 테이블들
     # 3순위: DT_1J22003 인근 번호 일괄 시도 (DT_1J22003 = 시도별이므로 제외)
-    env_tbl  = _KOSIS_PRICES_TBL if _KOSIS_PRICES_TBL not in ("DT_1J22003", "DT_1J22017") else ""
+    # 통계목록 탐색으로 확인된 정확한 테이블 ID 목록 (2026-07 기준)
+    # DT_1J22005 = 생활물가지수(2020=100)  ← 첫 번째 시도
+    # DT_1J22112 = 품목별 소비자물가지수(품목성질별: 2020=100)
+    # DT_1J22001 = 지출목적별 소비자물가지수(품목포함, 2020=100)
+    env_tbl  = _KOSIS_PRICES_TBL if _KOSIS_PRICES_TBL not in (
+        "DT_1J22003", "DT_1J22017") else ""
     api_tbls = _kosis_list_price_tables()
-    # DT_1J22003=시도별CPI, DT_1J22017=COICOP분류CPI → 제외하고 나머지 순차 탐색
-    exclude  = {"DT_1J22003", "DT_1J22017"}
-    seq_tbls = [f"DT_1J2200{i}" for i in range(4, 10)
-                if f"DT_1J2200{i}" not in exclude] + \
-               [f"DT_1J2201{i}" for i in range(0, 10)
-                if f"DT_1J2201{i}" not in exclude] + \
-               [f"DT_1J2202{i}" for i in range(0, 10)] + \
-               [f"DT_1J2203{i}" for i in range(0, 10)] + \
-               [f"DT_1J2204{i}" for i in range(0, 10)] + \
-               [f"DT_1J2205{i}" for i in range(0, 5)]
+    confirmed_tbls = ["DT_1J22005", "DT_1J22112", "DT_1J22001"]
 
     tbl_candidates = list(dict.fromkeys(
-        ([env_tbl] if env_tbl else []) + api_tbls + seq_tbls
+        ([env_tbl] if env_tbl else []) + confirmed_tbls + api_tbls
     ))
     _cache["kosis_list_found_tbls"] = api_tbls
 
