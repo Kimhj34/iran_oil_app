@@ -402,41 +402,52 @@ _CPI_VALUES_FB = _lp([(0,104),(5,107),(11,110),(23,113),(35,116),(47,118),(52,12
 # ── KOSIS API 헬퍼 ──────────────────────────────────────────────────────────
 
 def _kosis_get(org_id: str, tbl_id: str, start: str = "202101") -> tuple[list | None, str]:
-    """KOSIS Open API 단순 조회. (row 리스트 또는 None, 상태 메시지) 반환."""
+    """KOSIS Open API 단순 조회. (row 리스트 또는 None, 상태 메시지) 반환.
+    objL2 없이 먼저 시도하고, itmId 변형도 순서대로 시도한다."""
     import urllib.request, urllib.parse, json as _json
 
     end = datetime.now().strftime("%Y%m")
-    qs  = urllib.parse.urlencode({
-        "method":     "getList",
-        "apiKey":     _KOSIS_KEY,
-        "itmId":      "T10",
-        "objL1":      "ALL",
-        "objL2":      "ALL",
-        "format":     "json",
-        "jsonVD":     "Y",
-        "prdSe":      "M",
-        "startPrdDe": start,
-        "endPrdDe":   end,
-        "orgId":      org_id,
-        "tblId":      tbl_id,
-    })
-    url = f"https://kosis.kr/openapi/Param/statisticsParameterData.do?{qs}"
-    try:
-        req  = urllib.request.Request(url, headers={"User-Agent": "iran-oil-app/1.0"})
-        with urllib.request.urlopen(req, timeout=20) as r:
-            data = _json.loads(r.read().decode("utf-8"))
-        # 에러 응답 감지 ({"err":...} 또는 [{"err":...}])
-        if isinstance(data, dict):
-            err_msg = data.get("errMsg") or data.get("err") or str(data)
-            return None, f"API 오류: {err_msg}"
-        if isinstance(data, list) and data and "err" in data[0]:
-            err_msg = data[0].get("errMsg") or data[0].get("err") or str(data[0])
-            return None, f"API 오류: {err_msg}"
-        if not isinstance(data, list):
-            return None, f"예상치 못한 응답 형식: {type(data).__name__}"
-        return data, f"OK ({len(data)}행)"
-    except Exception as e:
-        return None, f"요청 실패: {e}"
+
+    # itmId 후보: T10(지수) → ALL 순으로 시도
+    for itm_id in ("T10", "ALL"):
+        base_params = {
+            "method":     "getList",
+            "apiKey":     _KOSIS_KEY,
+            "itmId":      itm_id,
+            "objL1":      "ALL",
+            "format":     "json",
+            "jsonVD":     "Y",
+            "prdSe":      "M",
+            "startPrdDe": start,
+            "endPrdDe":   end,
+            "orgId":      org_id,
+            "tblId":      tbl_id,
+        }
+        url = ("https://kosis.kr/openapi/Param/statisticsParameterData.do?"
+               + urllib.parse.urlencode(base_params))
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "iran-oil-app/1.0"})
+            with urllib.request.urlopen(req, timeout=20) as r:
+                data = _json.loads(r.read().decode("utf-8"))
+
+            if isinstance(data, dict):
+                err_msg = data.get("errMsg") or data.get("err") or str(data)
+                last_err = f"API 오류(itmId={itm_id}): {err_msg}"
+                continue  # 다음 itmId 시도
+            if isinstance(data, list) and data and "err" in data[0]:
+                err_msg = data[0].get("errMsg") or data[0].get("err") or str(data[0])
+                last_err = f"API 오류(itmId={itm_id}): {err_msg}"
+                continue
+            if not isinstance(data, list) or len(data) == 0:
+                last_err = f"빈 응답(itmId={itm_id})"
+                continue
+
+            return data, f"OK itmId={itm_id} ({len(data)}행)"
+        except Exception as e:
+            last_err = f"요청 실패(itmId={itm_id}): {e}"
+            continue
+
+    return None, last_err
 
 
 def _kosis_item_name(row: dict) -> str:
@@ -446,11 +457,24 @@ def _kosis_item_name(row: dict) -> str:
 
 
 def _load_prices_from_kosis() -> dict | None:
-    """KOSIS API로 생활물가지수 품목별 월별 데이터 수집."""
+    """KOSIS API로 생활물가지수 품목별 월별 데이터 수집.
+    환경변수 테이블 ID → 알려진 후보 ID 순으로 시도."""
     if not _KOSIS_KEY:
         return None
 
-    rows, msg = _kosis_get(_KOSIS_PRICES_ORG, _KOSIS_PRICES_TBL, "202101")
+    # 생활물가지수(2020=100) 후보 테이블 ID (환경변수 우선)
+    tbl_candidates = list(dict.fromkeys([
+        _KOSIS_PRICES_TBL,
+        "DT_1J22003", "DT_1400087", "DT_1J22002", "DT_1400080",
+    ]))
+
+    rows, msg = None, ""
+    for tbl in tbl_candidates:
+        rows, msg = _kosis_get(_KOSIS_PRICES_ORG, tbl, "202101")
+        if rows is not None:
+            _cache["kosis_prices_tbl_used"] = tbl
+            break
+
     if rows is None:
         _cache["kosis_prices_err"] = msg
         return None
@@ -493,11 +517,24 @@ def _load_prices_from_kosis() -> dict | None:
 
 
 def _load_cpi_from_kosis() -> dict | None:
-    """KOSIS API로 소비자물가지수 총지수 월별 데이터 수집."""
+    """KOSIS API로 소비자물가지수 총지수 월별 데이터 수집.
+    환경변수 테이블 ID → 알려진 후보 ID 순으로 시도."""
     if not _KOSIS_KEY:
         return None
 
-    rows, msg = _kosis_get(_KOSIS_CPI_ORG, _KOSIS_CPI_TBL, "202101")
+    # 소비자물가지수(2020=100) 후보 테이블 ID
+    tbl_candidates = list(dict.fromkeys([
+        _KOSIS_CPI_TBL,
+        "DT_1J22001", "DT_1400078", "DT_1J22004", "DT_1400079",
+    ]))
+
+    rows, msg = None, ""
+    for tbl in tbl_candidates:
+        rows, msg = _kosis_get(_KOSIS_CPI_ORG, tbl, "202101")
+        if rows is not None:
+            _cache["kosis_cpi_tbl_used"] = tbl
+            break
+
     if rows is None:
         _cache["kosis_cpi_err"] = msg
         return None
@@ -960,9 +997,11 @@ def get_data_source():
         "kosis_detail":      kosis_detail,
         "kosis_prices_tbl":  f"{_KOSIS_PRICES_ORG}/{_KOSIS_PRICES_TBL}",
         "kosis_cpi_tbl":     f"{_KOSIS_CPI_ORG}/{_KOSIS_CPI_TBL}",
-        "kosis_sample":      kosis_sample,
-        "kosis_prices_err":  _cache.get("kosis_prices_err"),
-        "kosis_cpi_err":     _cache.get("kosis_cpi_err"),
+        "kosis_sample":           kosis_sample,
+        "kosis_prices_tbl_used":  _cache.get("kosis_prices_tbl_used"),
+        "kosis_cpi_tbl_used":     _cache.get("kosis_cpi_tbl_used"),
+        "kosis_prices_err":       _cache.get("kosis_prices_err"),
+        "kosis_cpi_err":          _cache.get("kosis_cpi_err"),
         "data_sources": {
             "oil":    sources.get("oil",    "unknown"),
             "prices": sources.get("prices", "unknown"),
