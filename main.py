@@ -328,59 +328,120 @@ def _load_oil_data() -> dict:
     }
 
 
+# ── 생활물가지수 하드코딩 폴백 (2020=100, 2022-01~2026-05, 53개월) ──
+def _lp(anchors: list) -> list:
+    """(month_idx, value) 앵커 → 53개월 선형보간 리스트"""
+    out = [0.0] * 53
+    for i in range(len(anchors) - 1):
+        i0, v0 = anchors[i];  i1, v1 = anchors[i + 1]
+        for j in range(i0, i1 + 1):
+            t = (j - i0) / (i1 - i0) if i1 != i0 else 0
+            out[j] = round(v0 + t * (v1 - v0), 1)
+    for j in range(anchors[-1][0] + 1, 53):
+        out[j] = anchors[-1][1]
+    return out
+
+# 2022-01=0, 2022-06=5, 2022-12=11, 2023-06=17, 2023-12=23,
+# 2024-06=29, 2024-12=35, 2025-06=41, 2025-12=47, 2026-02=49, 2026-05=52
+_PRICES_MONTHS_FB = [
+    f"{y}-{m:02d}"
+    for y in range(2022, 2027)
+    for m in range(1, 13)
+    if (y, m) <= (2026, 5)
+]  # 53개월
+_PRICES_ITEMS_FB = {
+    "라면":      _lp([(0,105),(5,113),(11,121),(23,128),(35,131),(47,133),(52,138)]),
+    "두부":      _lp([(0,103),(11,112),(23,117),(35,120),(47,122),(52,126)]),
+    "우유":      _lp([(0,105),(11,116),(23,120),(35,123),(47,125),(52,129)]),
+    "달걀":      _lp([(0,108),(5,118),(11,120),(23,124),(35,127),(47,129),(52,133)]),
+    "식용유":    _lp([(0,113),(5,152),(11,145),(17,135),(23,128),(35,125),(47,125),(52,131)]),
+    "생수":      _lp([(0,103),(11,108),(23,112),(35,115),(47,117),(52,121)]),
+    "전기료":    _lp([(0,100),(11,112),(17,122),(23,124),(35,128),(47,130),(52,137)]),
+    "도시가스":  _lp([(0,103),(5,122),(11,130),(17,133),(23,132),(35,130),(47,131),(52,139)]),
+    "휘발유":    _lp([(0,110),(5,148),(11,130),(23,118),(35,118),(47,118),(49,119),(52,141)]),
+    "택배이용료":_lp([(0,108),(11,116),(23,121),(35,126),(47,130),(52,135)]),
+    "샴푸":      _lp([(0,103),(11,110),(23,116),(35,120),(47,122),(52,126)]),
+    "화장지":    _lp([(0,103),(11,112),(23,115),(35,118),(47,120),(52,123)]),
+}
+_PRICES_ANNUAL_FB = {
+    "라면":      {"2021":102,"2022":113,"2023":127,"2024":130,"2025":133},
+    "두부":      {"2021":101,"2022":108,"2023":116,"2024":120,"2025":122},
+    "우유":      {"2021":103,"2022":111,"2023":119,"2024":122,"2025":125},
+    "달걀":      {"2021":105,"2022":115,"2023":122,"2024":126,"2025":129},
+    "식용유":    {"2021":108,"2022":139,"2023":131,"2024":126,"2025":125},
+    "생수":      {"2021":101,"2022":106,"2023":111,"2024":115,"2025":117},
+    "전기료":    {"2021": 99,"2022":107,"2023":123,"2024":127,"2025":130},
+    "도시가스":  {"2021":101,"2022":118,"2023":133,"2024":130,"2025":131},
+    "휘발유":    {"2021":104,"2022":134,"2023":120,"2024":119,"2025":118},
+    "택배이용료":{"2021":106,"2022":112,"2023":120,"2024":125,"2025":130},
+    "샴푸":      {"2021":101,"2022":107,"2023":115,"2024":120,"2025":122},
+    "화장지":    {"2021":101,"2022":108,"2023":114,"2024":117,"2025":120},
+}
+
+# ── 소비자물가지수 하드코딩 폴백 (2020=100) ──
+_CPI_MONTHS_FB = _PRICES_MONTHS_FB
+_CPI_VALUES_FB = _lp([(0,104),(5,107),(11,110),(23,113),(35,116),(47,118),(52,123)])
+
+
+def _load_prices_data() -> dict:
+    """생활물가지수 Excel → 없으면 하드코딩 폴백"""
+    xl_path = BASE_DIR / "생활물가지수_2020100__20260607122851.xlsx"
+    if xl_path.exists():
+        try:
+            xl = pd.read_excel(xl_path, header=None)
+            month_cols = list(range(2, 55))
+            months = [_parse_month_col(xl.iloc[0, c]) for c in month_cols]
+            price_items = {}
+            for item, row_idx in ITEM_ROW_MAP.items():
+                price_items[item] = [
+                    float(xl.iloc[row_idx, c]) if pd.notna(xl.iloc[row_idx, c]) else None
+                    for c in month_cols
+                ]
+            annual_cols = {"2021": 55, "2022": 56, "2023": 57, "2024": 58, "2025": 59}
+            annual = {
+                item: {
+                    yr: float(xl.iloc[row_idx, ci]) if pd.notna(xl.iloc[row_idx, ci]) else None
+                    for yr, ci in annual_cols.items()
+                }
+                for item, row_idx in ITEM_ROW_MAP.items()
+            }
+            return {"months": months, "items": price_items, "annual": annual}
+        except Exception:
+            pass
+    return {
+        "months":  _PRICES_MONTHS_FB,
+        "items":   _PRICES_ITEMS_FB,
+        "annual":  _PRICES_ANNUAL_FB,
+    }
+
+
+def _load_cpi_data() -> dict:
+    """소비자물가지수 Excel → 없으면 하드코딩 폴백"""
+    xl_path = BASE_DIR / "소비자물가지수_2020100__20260607123034.xlsx"
+    if xl_path.exists():
+        try:
+            xl2 = pd.read_excel(xl_path, header=None)
+            cpi_months = [_parse_month_col(xl2.iloc[0, c]) for c in range(1, xl2.shape[1])]
+            cpi_vals = [
+                float(xl2.iloc[1, c]) if pd.notna(xl2.iloc[1, c]) else None
+                for c in range(1, xl2.shape[1])
+            ]
+            return {"months": cpi_months, "values": cpi_vals}
+        except Exception:
+            pass
+    return {"months": _CPI_MONTHS_FB, "values": _CPI_VALUES_FB}
+
+
 def _load_data():
     global _cache
     if _cache:
         return
 
-    # 브렌트유 데이터: CSV → yfinance → 하드코딩 순서로 폴백
-    _cache["oil"] = _load_oil_data()
-
-    # 생활물가지수 Excel
-    xl = pd.read_excel(
-        BASE_DIR / "생활물가지수_2020100__20260607122851.xlsx", header=None
-    )
-    month_cols = list(range(2, 55))  # col 2~54 = 2022.01~2026.05
-    months = [_parse_month_col(xl.iloc[0, c]) for c in month_cols]
-
-    price_items = {}
-    for item, row_idx in ITEM_ROW_MAP.items():
-        vals = [
-            float(xl.iloc[row_idx, c]) if pd.notna(xl.iloc[row_idx, c]) else None
-            for c in month_cols
-        ]
-        price_items[item] = vals
-
-    # 연도별 평균 (col 55~59 = 2021~2025)
-    annual_cols = {
-        "2021": 55, "2022": 56, "2023": 57, "2024": 58, "2025": 59
-    }
-    annual = {}
-    for item, row_idx in ITEM_ROW_MAP.items():
-        annual[item] = {
-            yr: float(xl.iloc[row_idx, ci])
-            if pd.notna(xl.iloc[row_idx, ci]) else None
-            for yr, ci in annual_cols.items()
-        }
-
-    _cache["prices"] = {"months": months, "items": price_items, "annual": annual}
-
-    # 소비자물가지수 Excel
-    xl2 = pd.read_excel(
-        BASE_DIR / "소비자물가지수_2020100__20260607123034.xlsx", header=None
-    )
-    cpi_months = [_parse_month_col(xl2.iloc[0, c]) for c in range(1, xl2.shape[1])]
-    cpi_vals = [
-        float(xl2.iloc[1, c]) if pd.notna(xl2.iloc[1, c]) else None
-        for c in range(1, xl2.shape[1])
-    ]
-    _cache["cpi"] = {"months": cpi_months, "values": cpi_vals}
-
-    # ── 회귀분석으로 탄성계수 계산 ──
+    _cache["oil"]          = _load_oil_data()
+    _cache["prices"]       = _load_prices_data()
+    _cache["cpi"]          = _load_cpi_data()
     _cache["elasticities"] = compute_elasticities(_cache["oil"], _cache["prices"])
-
-    # ── yfinance 실시간 가격 ──
-    _cache["realtime"] = fetch_realtime_brent()
+    _cache["realtime"]     = fetch_realtime_brent()
 
 
 @app.on_event("startup")
