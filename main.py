@@ -401,8 +401,8 @@ _CPI_VALUES_FB = _lp([(0,104),(5,107),(11,110),(23,113),(35,116),(47,118),(52,12
 
 # ── KOSIS API 헬퍼 ──────────────────────────────────────────────────────────
 
-def _kosis_get(org_id: str, tbl_id: str, start: str = "202101") -> list | None:
-    """KOSIS Open API 단순 조회. 성공 시 row 리스트, 실패 시 None."""
+def _kosis_get(org_id: str, tbl_id: str, start: str = "202101") -> tuple[list | None, str]:
+    """KOSIS Open API 단순 조회. (row 리스트 또는 None, 상태 메시지) 반환."""
     import urllib.request, urllib.parse, json as _json
 
     end = datetime.now().strftime("%Y%m")
@@ -427,12 +427,16 @@ def _kosis_get(org_id: str, tbl_id: str, start: str = "202101") -> list | None:
             data = _json.loads(r.read().decode("utf-8"))
         # 에러 응답 감지 ({"err":...} 또는 [{"err":...}])
         if isinstance(data, dict):
-            return None
+            err_msg = data.get("errMsg") or data.get("err") or str(data)
+            return None, f"API 오류: {err_msg}"
         if isinstance(data, list) and data and "err" in data[0]:
-            return None
-        return data if isinstance(data, list) else None
-    except Exception:
-        return None
+            err_msg = data[0].get("errMsg") or data[0].get("err") or str(data[0])
+            return None, f"API 오류: {err_msg}"
+        if not isinstance(data, list):
+            return None, f"예상치 못한 응답 형식: {type(data).__name__}"
+        return data, f"OK ({len(data)}행)"
+    except Exception as e:
+        return None, f"요청 실패: {e}"
 
 
 def _kosis_item_name(row: dict) -> str:
@@ -446,8 +450,9 @@ def _load_prices_from_kosis() -> dict | None:
     if not _KOSIS_KEY:
         return None
 
-    rows = _kosis_get(_KOSIS_PRICES_ORG, _KOSIS_PRICES_TBL, "202101")
-    if not rows:
+    rows, msg = _kosis_get(_KOSIS_PRICES_ORG, _KOSIS_PRICES_TBL, "202101")
+    if rows is None:
+        _cache["kosis_prices_err"] = msg
         return None
 
     item_month: dict[str, dict[str, float]] = {}
@@ -492,8 +497,9 @@ def _load_cpi_from_kosis() -> dict | None:
     if not _KOSIS_KEY:
         return None
 
-    rows = _kosis_get(_KOSIS_CPI_ORG, _KOSIS_CPI_TBL, "202101")
-    if not rows:
+    rows, msg = _kosis_get(_KOSIS_CPI_ORG, _KOSIS_CPI_TBL, "202101")
+    if rows is None:
+        _cache["kosis_cpi_err"] = msg
         return None
 
     month_vals: dict[str, float] = {}
@@ -934,17 +940,29 @@ def get_data_source():
     _load_data()
     sources = _cache.get("sources", {})
 
-    # KOSIS 연결 테스트 (키가 있을 때만)
+    # KOSIS 연결 테스트 (키가 있을 때만, 최근 1개월만 조회)
     kosis_status = "no_key"
+    kosis_detail = ""
+    kosis_sample = None
     if _KOSIS_KEY:
-        test = _kosis_get(_KOSIS_PRICES_ORG, _KOSIS_PRICES_TBL, "202601")
-        kosis_status = "ok" if test is not None else "error"
+        rows, msg = _kosis_get(_KOSIS_PRICES_ORG, _KOSIS_PRICES_TBL, "202601")
+        if rows is not None:
+            kosis_status = "ok"
+            kosis_detail = msg
+            kosis_sample = rows[:2]  # 응답 구조 확인용 앞 2행
+        else:
+            kosis_status = "error"
+            kosis_detail = msg
 
     return {
         "kosis_api_key_set": bool(_KOSIS_KEY),
         "kosis_status":      kosis_status,
+        "kosis_detail":      kosis_detail,
         "kosis_prices_tbl":  f"{_KOSIS_PRICES_ORG}/{_KOSIS_PRICES_TBL}",
         "kosis_cpi_tbl":     f"{_KOSIS_CPI_ORG}/{_KOSIS_CPI_TBL}",
+        "kosis_sample":      kosis_sample,
+        "kosis_prices_err":  _cache.get("kosis_prices_err"),
+        "kosis_cpi_err":     _cache.get("kosis_cpi_err"),
         "data_sources": {
             "oil":    sources.get("oil",    "unknown"),
             "prices": sources.get("prices", "unknown"),
