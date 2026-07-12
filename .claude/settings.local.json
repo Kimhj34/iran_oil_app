@@ -1,0 +1,25 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell($r = Invoke-RestMethod \"http://127.0.0.1:8080/api/scenario/local\"; \"items count: $\\($r.items.Count\\)\"; \"summary: $\\(\\($r.summary.PSObject.Properties.Name\\) -join ', '\\)\")",
+      "PowerShell($r = Invoke-RestMethod \"http://127.0.0.1:8080/api/prices\"; \"months: $\\($r.months.Count\\)\"; \"item keys: $\\(\\($r.items.PSObject.Properties.Name\\) -join ', '\\)\"; \"kpi keys: $\\(\\($r.kpi.PSObject.Properties.Name\\) -join ', '\\)\")",
+      "PowerShell($r = Invoke-RestMethod \"http://127.0.0.1:8080/api/analysis\"; \"items count: $\\($r.items.Count\\)\"; $r.items[0])",
+      "PowerShell(Start-Process \"http://127.0.0.1:8080\")",
+      "PowerShell(Invoke-RestMethod \"http://127.0.0.1:8080/api/oil\" -ErrorAction SilentlyContinue | ConvertTo-Json -Depth 3 | Select-Object -First 50)",
+      "PowerShell(try { $r = Invoke-RestMethod \"http://127.0.0.1:8080/api/realtime\"; $r | ConvertTo-Json } catch { $_.Exception.Message })",
+      "PowerShell(Get-Content *)",
+      "PowerShell(node --check \"C:\\\\Users\\\\kim04\\\\Desktop\\\\iran_oil_app\\\\static\\\\app.js\" 2>&1)",
+      "PowerShell(Invoke-WebRequest \"http://127.0.0.1:8080/static/app.js?v=3\" -UseBasicParsing | Select-Object -ExpandProperty StatusCode)",
+      "PowerShell(Invoke-RestMethod \"http://127.0.0.1:8080/api/realtime\" | ConvertTo-Json)",
+      "PowerShell(Invoke-RestMethod \"http://127.0.0.1:8080/api/auth/register\" -Method POST -ContentType \"application/json\" -Body '{\"name\":\"TestUser\",\"email\":\"demo@test.com\",\"password\":\"test1234\"}' | ConvertTo-Json)",
+      "PowerShell(Invoke-WebRequest \"http://127.0.0.1:8080/static/style.css?v=2\" -UseBasicParsing | Select-Object StatusCode, @{N='size';E={$_.Content.Length}})",
+      "PowerShell(Stop-Process *)",
+      "PowerShell(Start-Process -FilePath \"python\" -ArgumentList \"-m uvicorn main:app --host 127.0.0.1 --port 8080\" -WorkingDirectory \"C:\\\\Users\\\\kim04\\\\Desktop\\\\iran_oil_app\" -WindowStyle Hidden; Start-Sleep -Seconds 3; \\(Invoke-WebRequest \"http://127.0.0.1:8080/\" -UseBasicParsing\\).Headers['Cache-Control'])",
+      "PowerShell(Start-Sleep -Seconds 5; try { $r = Invoke-WebRequest \"http://127.0.0.1:8080/\" -UseBasicParsing; \"OK: \" + $r.StatusCode + \" | Cache-Control: \" + $r.Headers['Cache-Control'] } catch { \"still starting...\" })",
+      "PowerShell(Get-NetTCPConnection *)",
+      "Bash(python *)",
+      "Bash(curl -s http://127.0.0.1:8080/api/auth/login -X POST -H \"Content-Type: application/json\" -d '{\"email\":\"demo@test.com\",\"password\":\"test1234\"}')",
+      "PowerShell(Invoke-RestMethod -Uri \"http://127.0.0.1:8080/api/auth/register\" -Method POST -ContentType \"application/json\" -Body '{\"name\":\"테스트\",\"email\":\"test@test.com\",\"password\":\"1234\"}')"
+    ]
+  }
+}

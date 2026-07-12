@@ -1,0 +1,22 @@
+# 환경변수 / 비밀키
+.env
+
+# 데이터베이스 (사용자 데이터 포함)
+*.db
+
+# Python 캐시
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# 로그
+*.log
+uvicorn*.log
+
+# 스크린샷 (임시 파일)
+screenshot_*.png
+
+# 개발 임시 파일
+oil_app.db
+inspect_data.py
