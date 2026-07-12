@@ -413,8 +413,9 @@ def _kosis_get(org_id: str, tbl_id: str, start: str = "202101") -> tuple[list | 
 
     end = datetime.now().strftime("%Y%m")
 
-    # itmId 후보: T10(지수) → ALL 순으로 시도
-    for itm_id in ("T10", "ALL"):
+    # itmId 후보: 통계청 테이블마다 사용 ID가 다름
+    # T10=지수(시도별), T=지수(연쇄방식), ALL=전체, T20=전년동월비
+    for itm_id in ("T10", "T", "ALL", "T20", "T30"):
         base_params = {
             "method":     "getList",
             "apiKey":     _KOSIS_KEY,
