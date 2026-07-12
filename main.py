@@ -36,6 +36,22 @@ app = FastAPI(title="이란전쟁 유가 분석")
 
 # ── JWT 설정 ──
 _SECRET = os.environ.get("SECRET_KEY", "iran-oil-dev-secret-change-in-prod")
+
+# ── KOSIS Open API 설정 ──────────────────────────────────────────────────────
+_KOSIS_KEY        = os.environ.get("KOSIS_API_KEY", "")
+_KOSIS_PRICES_ORG = os.environ.get("KOSIS_PRICES_ORG", "101")
+_KOSIS_PRICES_TBL = os.environ.get("KOSIS_PRICES_TBL", "DT_1J22003")  # 생활물가지수(2020=100)
+_KOSIS_CPI_ORG    = os.environ.get("KOSIS_CPI_ORG",    "101")
+_KOSIS_CPI_TBL    = os.environ.get("KOSIS_CPI_TBL",    "DT_1J22001")  # 소비자물가지수(2020=100)
+
+# KOSIS 응답 품목명 → 내부 품목명 매핑
+_KOSIS_NAME_MAP = {
+    "라면": "라면", "두부": "두부", "우유": "우유",
+    "달걀": "달걀", "식용유": "식용유", "생수": "생수",
+    "전기료": "전기료", "도시가스": "도시가스",
+    "휘발유": "휘발유", "택배이용료": "택배이용료",
+    "샴푸": "샴푸", "화장지": "화장지",
+}
 _ALGO   = "HS256"
 _TOKEN_HOURS = 24 * 7   # 7일
 
@@ -383,8 +399,134 @@ _CPI_MONTHS_FB = _PRICES_MONTHS_FB
 _CPI_VALUES_FB = _lp([(0,104),(5,107),(11,110),(23,113),(35,116),(47,118),(52,123)])
 
 
-def _load_prices_data() -> dict:
-    """생활물가지수 Excel → 없으면 하드코딩 폴백"""
+# ── KOSIS API 헬퍼 ──────────────────────────────────────────────────────────
+
+def _kosis_get(org_id: str, tbl_id: str, start: str = "202101") -> list | None:
+    """KOSIS Open API 단순 조회. 성공 시 row 리스트, 실패 시 None."""
+    import urllib.request, urllib.parse, json as _json
+
+    end = datetime.now().strftime("%Y%m")
+    qs  = urllib.parse.urlencode({
+        "method":     "getList",
+        "apiKey":     _KOSIS_KEY,
+        "itmId":      "T10",
+        "objL1":      "ALL",
+        "objL2":      "ALL",
+        "format":     "json",
+        "jsonVD":     "Y",
+        "prdSe":      "M",
+        "startPrdDe": start,
+        "endPrdDe":   end,
+        "orgId":      org_id,
+        "tblId":      tbl_id,
+    })
+    url = f"https://kosis.kr/openapi/Param/statisticsParameterData.do?{qs}"
+    try:
+        req  = urllib.request.Request(url, headers={"User-Agent": "iran-oil-app/1.0"})
+        with urllib.request.urlopen(req, timeout=20) as r:
+            data = _json.loads(r.read().decode("utf-8"))
+        # 에러 응답 감지 ({"err":...} 또는 [{"err":...}])
+        if isinstance(data, dict):
+            return None
+        if isinstance(data, list) and data and "err" in data[0]:
+            return None
+        return data if isinstance(data, list) else None
+    except Exception:
+        return None
+
+
+def _kosis_item_name(row: dict) -> str:
+    """KOSIS 응답 row에서 품목명 추출 (테이블마다 필드명이 다름)."""
+    return (row.get("C1_NM") or row.get("objNm1") or
+            row.get("ITM_NM") or row.get("itmNm") or "")
+
+
+def _load_prices_from_kosis() -> dict | None:
+    """KOSIS API로 생활물가지수 품목별 월별 데이터 수집."""
+    if not _KOSIS_KEY:
+        return None
+
+    rows = _kosis_get(_KOSIS_PRICES_ORG, _KOSIS_PRICES_TBL, "202101")
+    if not rows:
+        return None
+
+    item_month: dict[str, dict[str, float]] = {}
+    for row in rows:
+        nm  = _kosis_item_name(row)
+        prd = row.get("PRD_DE", "")
+        if len(prd) != 6:
+            continue
+        month = f"{prd[:4]}-{prd[4:]}"
+        try:
+            val = float(row.get("DT", ""))
+        except (ValueError, TypeError):
+            continue
+        matched = next((v for k, v in _KOSIS_NAME_MAP.items() if k in nm), None)
+        if matched:
+            item_month.setdefault(matched, {})[month] = val
+
+    if len(item_month) < 5:  # 품목 5개 미만이면 잘못된 응답
+        return None
+
+    months = sorted({m for d in item_month.values() for m in d})
+    if len(months) < 12:
+        return None
+
+    items = {name: [d.get(m) for m in months] for name, d in item_month.items()}
+    annual = {
+        name: {
+            yr: round(
+                sum(v for m, v in d.items() if m.startswith(yr)) /
+                max(1, sum(1 for m in d if m.startswith(yr))), 1
+            )
+            for yr in ["2021", "2022", "2023", "2024", "2025"]
+            if any(m.startswith(yr) for m in d)
+        }
+        for name, d in item_month.items()
+    }
+    return {"months": months, "items": items, "annual": annual}
+
+
+def _load_cpi_from_kosis() -> dict | None:
+    """KOSIS API로 소비자물가지수 총지수 월별 데이터 수집."""
+    if not _KOSIS_KEY:
+        return None
+
+    rows = _kosis_get(_KOSIS_CPI_ORG, _KOSIS_CPI_TBL, "202101")
+    if not rows:
+        return None
+
+    month_vals: dict[str, float] = {}
+    for row in rows:
+        prd = row.get("PRD_DE", "")
+        if len(prd) != 6:
+            continue
+        month = f"{prd[:4]}-{prd[4:]}"
+        try:
+            val = float(row.get("DT", ""))
+        except (ValueError, TypeError):
+            continue
+        # 월별 첫 번째 값만 사용 (총지수 테이블은 월 1행)
+        if month not in month_vals:
+            month_vals[month] = val
+
+    if len(month_vals) < 12:
+        return None
+
+    months = sorted(month_vals.keys())
+    return {"months": months, "values": [month_vals[m] for m in months]}
+
+
+# ── 데이터 로더 (KOSIS → Excel → 하드코딩 순 폴백) ──────────────────────────
+
+def _load_prices_data() -> tuple[dict, str]:
+    """생활물가지수: KOSIS API → Excel → 하드코딩 순으로 시도. (데이터, 출처) 반환."""
+    # 1) KOSIS API
+    result = _load_prices_from_kosis()
+    if result:
+        return result, "kosis"
+
+    # 2) 로컬 Excel
     xl_path = BASE_DIR / "생활물가지수_2020100__20260607122851.xlsx"
     if xl_path.exists():
         try:
@@ -405,18 +547,22 @@ def _load_prices_data() -> dict:
                 }
                 for item, row_idx in ITEM_ROW_MAP.items()
             }
-            return {"months": months, "items": price_items, "annual": annual}
+            return {"months": months, "items": price_items, "annual": annual}, "excel"
         except Exception:
             pass
-    return {
-        "months":  _PRICES_MONTHS_FB,
-        "items":   _PRICES_ITEMS_FB,
-        "annual":  _PRICES_ANNUAL_FB,
-    }
+
+    # 3) 하드코딩 폴백
+    return {"months": _PRICES_MONTHS_FB, "items": _PRICES_ITEMS_FB, "annual": _PRICES_ANNUAL_FB}, "fallback"
 
 
-def _load_cpi_data() -> dict:
-    """소비자물가지수 Excel → 없으면 하드코딩 폴백"""
+def _load_cpi_data() -> tuple[dict, str]:
+    """소비자물가지수: KOSIS API → Excel → 하드코딩 순으로 시도. (데이터, 출처) 반환."""
+    # 1) KOSIS API
+    result = _load_cpi_from_kosis()
+    if result:
+        return result, "kosis"
+
+    # 2) 로컬 Excel
     xl_path = BASE_DIR / "소비자물가지수_2020100__20260607123034.xlsx"
     if xl_path.exists():
         try:
@@ -426,10 +572,12 @@ def _load_cpi_data() -> dict:
                 float(xl2.iloc[1, c]) if pd.notna(xl2.iloc[1, c]) else None
                 for c in range(1, xl2.shape[1])
             ]
-            return {"months": cpi_months, "values": cpi_vals}
+            return {"months": cpi_months, "values": cpi_vals}, "excel"
         except Exception:
             pass
-    return {"months": _CPI_MONTHS_FB, "values": _CPI_VALUES_FB}
+
+    # 3) 하드코딩 폴백
+    return {"months": _CPI_MONTHS_FB, "values": _CPI_VALUES_FB}, "fallback"
 
 
 def _load_data():
@@ -437,11 +585,20 @@ def _load_data():
     if _cache:
         return
 
+    prices_data, prices_src = _load_prices_data()
+    cpi_data,    cpi_src    = _load_cpi_data()
+
     _cache["oil"]          = _load_oil_data()
-    _cache["prices"]       = _load_prices_data()
-    _cache["cpi"]          = _load_cpi_data()
-    _cache["elasticities"] = compute_elasticities(_cache["oil"], _cache["prices"])
+    _cache["prices"]       = prices_data
+    _cache["cpi"]          = cpi_data
+    _cache["elasticities"] = compute_elasticities(_cache["oil"], prices_data)
     _cache["realtime"]     = fetch_realtime_brent()
+    _cache["sources"]      = {
+        "oil":    "csv" if (BASE_DIR / "chart_20260607T031456.csv").exists() else
+                  ("yfinance" if _YF_AVAILABLE else "fallback"),
+        "prices": prices_src,
+        "cpi":    cpi_src,
+    }
 
 
 @app.on_event("startup")
@@ -769,6 +926,38 @@ def get_realtime():
         rt = fetch_realtime_brent()
         _cache["realtime"] = rt
     return rt or {"error": "실시간 데이터를 가져올 수 없습니다 (yfinance 오류)"}
+
+
+@app.get("/api/data-source")
+def get_data_source():
+    """현재 사용 중인 데이터 출처 및 KOSIS API 연결 상태 반환."""
+    _load_data()
+    sources = _cache.get("sources", {})
+
+    # KOSIS 연결 테스트 (키가 있을 때만)
+    kosis_status = "no_key"
+    if _KOSIS_KEY:
+        test = _kosis_get(_KOSIS_PRICES_ORG, _KOSIS_PRICES_TBL, "202601")
+        kosis_status = "ok" if test is not None else "error"
+
+    return {
+        "kosis_api_key_set": bool(_KOSIS_KEY),
+        "kosis_status":      kosis_status,
+        "kosis_prices_tbl":  f"{_KOSIS_PRICES_ORG}/{_KOSIS_PRICES_TBL}",
+        "kosis_cpi_tbl":     f"{_KOSIS_CPI_ORG}/{_KOSIS_CPI_TBL}",
+        "data_sources": {
+            "oil":    sources.get("oil",    "unknown"),
+            "prices": sources.get("prices", "unknown"),
+            "cpi":    sources.get("cpi",    "unknown"),
+        },
+        "source_labels": {
+            "kosis":    "KOSIS Open API (통계청 실시간)",
+            "excel":    "로컬 Excel 파일 (통계청 다운로드)",
+            "yfinance": "Yahoo Finance API",
+            "csv":      "로컬 CSV 파일",
+            "fallback": "하드코딩 추정값 (폴백)",
+        },
+    }
 
 
 @app.get("/api/analysis")
