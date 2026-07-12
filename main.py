@@ -456,20 +456,57 @@ def _kosis_item_name(row: dict) -> str:
             row.get("ITM_NM") or row.get("itmNm") or "")
 
 
+def _kosis_list_price_tables() -> list[str]:
+    """KOSIS 통계목록 API로 물가 관련 테이블 ID 목록을 탐색한다."""
+    import urllib.request, urllib.parse, json as _json
+
+    found = []
+    # 주제별 분류(MT_ZTITLE)에서 물가 카테고리 탐색
+    # parentListId 후보: 경제 대주제 아래 '물가·가격' 소주제
+    for parent_id in ("K", "I", "J", "104", "105", "106"):
+        try:
+            qs = urllib.parse.urlencode({
+                "method":       "getList",
+                "apiKey":       _KOSIS_KEY,
+                "vwCd":         "MT_ZTITLE",
+                "parentListId": parent_id,
+                "format":       "json",
+                "jsonVD":       "Y",
+            })
+            url = f"https://kosis.kr/openapi/statisticsList.do?{qs}"
+            req = urllib.request.Request(url, headers={"User-Agent": "iran-oil-app/1.0"})
+            with urllib.request.urlopen(req, timeout=10) as r:
+                data = _json.loads(r.read().decode("utf-8"))
+            if isinstance(data, list):
+                for item in data:
+                    nm  = item.get("TBL_NM", "") or item.get("LIST_NM", "")
+                    tid = item.get("TBL_ID", "")
+                    if tid and any(kw in nm for kw in ("생활물가", "소비자물가", "물가지수")):
+                        found.append(tid)
+        except Exception:
+            pass
+    return found
+
+
 def _load_prices_from_kosis() -> dict | None:
     """KOSIS API로 생활물가지수/소비자물가지수 품목별 월별 데이터 수집.
     C1_NM에 품목명(라면·달걀 등)이 있는 테이블을 찾는다."""
     if not _KOSIS_KEY:
         return None
 
-    # 품목별 생활물가지수/소비자물가지수 후보 테이블 ID
-    # DT_1J22003 = 소비자물가지수 시도별(지역) → 품목 없음, 제외
-    tbl_candidates = list(dict.fromkeys([
-        _KOSIS_PRICES_TBL if _KOSIS_PRICES_TBL != "DT_1J22003" else "",
-        "DT_1J22001", "DT_1400078", "DT_1400080",
-        "DT_1400087", "DT_1J22002", "DT_1400086",
-    ]))
-    tbl_candidates = [t for t in tbl_candidates if t]
+    # 1순위: 환경변수로 직접 지정한 테이블
+    # 2순위: 통계목록 API로 탐색한 테이블들
+    # 3순위: DT_1J22003 인근 번호 일괄 시도 (DT_1J22003 = 시도별이므로 제외)
+    env_tbl = _KOSIS_PRICES_TBL if _KOSIS_PRICES_TBL != "DT_1J22003" else ""
+    api_tbls = _kosis_list_price_tables()
+    seq_tbls = [f"DT_1J2200{i}" for i in range(4, 10)] + \
+               [f"DT_1J2201{i}" for i in range(0, 10)] + \
+               [f"DT_1J2202{i}" for i in range(0, 5)]
+
+    tbl_candidates = list(dict.fromkeys(
+        ([env_tbl] if env_tbl else []) + api_tbls + seq_tbls
+    ))
+    _cache["kosis_list_found_tbls"] = api_tbls  # 통계목록 API 탐색 결과 기록
 
     rows, msg = None, ""
     for tbl in tbl_candidates:
@@ -1019,6 +1056,7 @@ def get_data_source():
         "kosis_prices_tbl_used":      _cache.get("kosis_prices_tbl_used"),
         "kosis_cpi_tbl_used":         _cache.get("kosis_cpi_tbl_used"),
         "kosis_prices_sample_names":  _cache.get("kosis_prices_sample_names"),
+        "kosis_list_found_tbls":      _cache.get("kosis_list_found_tbls"),
         "kosis_prices_err":           _cache.get("kosis_prices_err"),
         "kosis_cpi_err":              _cache.get("kosis_cpi_err"),
         "data_sources": {
