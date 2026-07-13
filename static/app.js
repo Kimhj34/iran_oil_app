@@ -581,8 +581,8 @@ async function loadTab2() {
 
   /* KPI 카드 */
   const kpi = data.kpi ?? {};
-  const kpiItems = ['라면', '달걀', '우유', '식용유', '두부'];
-  document.getElementById('tab2-kpi').innerHTML = kpiItems.map(item => `
+  const tab2Items = ['라면', '달걀', '우유', '식용유', '두부'];
+  document.getElementById('tab2-kpi').innerHTML = tab2Items.map(item => `
     <div class="kpi-card">
       <div class="kpi-label">${item}</div>
       <div class="kpi-value ${(kpi[item] ?? 0) > 0 ? 'up' : 'dn'}">
@@ -595,7 +595,7 @@ async function loadTab2() {
   /* 품목별 멀티라인 차트 */
   const months     = data.months;
   const items      = data.items;
-  const showItems  = ['라면', '우유', '달걀', '식용유', '생수'];
+  const showItems  = tab2Items;
   const datasets   = showItems.map(name => ({
     label: name,
     data:  items[name],
