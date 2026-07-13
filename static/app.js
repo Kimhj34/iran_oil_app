@@ -657,7 +657,7 @@ async function loadTab2() {
   /* 연도별 바 차트 */
   const years      = ['2022', '2023', '2024', '2025'];
   const barColors  = [COLORS.teal, COLORS.yellow, COLORS.orange, COLORS.red];
-  const annualItems = ['라면', '달걀', '우유', '식용유'];
+  const annualItems = TAB2_ITEMS.map(({ name }) => name);
 
   const barDatasets = years.map((yr, i) => ({
     label: `${yr}년`,
