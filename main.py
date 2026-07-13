@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 from fastapi import FastAPI, HTTPException, Depends
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
@@ -37,26 +37,6 @@ app = FastAPI(title="이란전쟁 유가 분석")
 # ── JWT 설정 ──
 _SECRET = os.environ.get("SECRET_KEY", "iran-oil-dev-secret-change-in-prod")
 
-# ── KOSIS Open API 설정 ──────────────────────────────────────────────────────
-_KOSIS_KEY        = os.environ.get("KOSIS_API_KEY", "")
-_KOSIS_PRICES_ORG = os.environ.get("KOSIS_PRICES_ORG", "101")
-_KOSIS_PRICES_TBL = os.environ.get("KOSIS_PRICES_TBL", "DT_1J22003")  # 생활물가지수(2020=100)
-_KOSIS_CPI_ORG    = os.environ.get("KOSIS_CPI_ORG",    "101")
-_KOSIS_CPI_TBL    = os.environ.get("KOSIS_CPI_TBL",    "DT_1J22001")  # 소비자물가지수(2020=100)
-
-# KOSIS 응답 품목명 → 내부 품목명 매핑
-# 통계청은 '계란' 표기 사용, '달걀'과 동일
-_KOSIS_NAME_MAP = {
-    "라면": "라면", "두부": "두부", "우유": "우유",
-    "달걀": "달걀", "계란": "달걀",        # 통계청은 '계란' 표기
-    "식용유": "식용유",
-    "생수": "생수",
-    "전기료": "전기료", "전기요금": "전기료",
-    "도시가스": "도시가스", "가스요금": "도시가스",
-    "휘발유": "휘발유",
-    "택배이용료": "택배이용료", "택배": "택배이용료",
-    "샴푸": "샴푸", "화장지": "화장지",
-}
 _ALGO   = "HS256"
 _TOKEN_HOURS = 24 * 7   # 7일
 
@@ -404,299 +384,11 @@ _CPI_MONTHS_FB = _PRICES_MONTHS_FB
 _CPI_VALUES_FB = _lp([(0,104),(5,107),(11,110),(23,113),(35,116),(47,118),(52,123)])
 
 
-# ── KOSIS API 헬퍼 ──────────────────────────────────────────────────────────
 
-def _kosis_raw(endpoint: str, params: dict) -> list | None:
-    """KOSIS API 호출 공통 유틸. 성공 시 list, 실패/오류 시 None."""
-    import urllib.request, urllib.parse, json as _json
-    try:
-        url = f"{endpoint}?{urllib.parse.urlencode(params)}"
-        req = urllib.request.Request(url, headers={"User-Agent": "iran-oil-app/1.0"})
-        with urllib.request.urlopen(req, timeout=20) as r:
-            data = _json.loads(r.read().decode("utf-8"))
-        if isinstance(data, dict):
-            return None
-        if isinstance(data, list) and data and "err" in data[0]:
-            return None
-        return data if isinstance(data, list) and data else None
-    except Exception:
-        return None
-
-
-def _kosis_get_meta(org_id: str, tbl_id: str) -> dict:
-    """KOSIS 통계메타 조회 → 유효한 itmId·objL1 코드 반환."""
-    import urllib.request, urllib.parse, json as _json
-    result: dict = {"itmIds": [], "objL1s": []}
-    base = {"apiKey": _KOSIS_KEY, "orgId": org_id, "tblId": tbl_id,
-            "format": "json", "jsonVD": "Y"}
-    # 방법1: statisticsMeta.do (항목 목록)
-    for meta_url, method_param in [
-        ("https://kosis.kr/openapi/statisticsMeta.do", "getList"),
-        ("https://kosis.kr/openapi/statisticsList.do",  "getStatsMeta"),
-    ]:
-        params = {**base, "method": method_param}
-        rows = _kosis_raw(meta_url, params)
-        if rows:
-            result["raw_meta"] = rows[:5]
-            result["itmIds"]   = list({r.get("ITM_ID","") for r in rows if r.get("ITM_ID")})[:10]
-            result["objL1s"]   = list({r.get("OBJ_ID","") for r in rows if r.get("OBJ_ID")})[:10]
-            break
-    return result
-
-
-def _kosis_get(org_id: str, tbl_id: str, start: str = "202101") -> tuple[list | None, str]:
-    """KOSIS Open API 단순 조회. (row 리스트 또는 None, 상태 메시지) 반환."""
-    import urllib.parse
-
-    end = datetime.now().strftime("%Y%m")
-    base = {"method": "getList", "apiKey": _KOSIS_KEY, "objL1": "ALL",
-            "format": "json", "jsonVD": "Y", "prdSe": "M",
-            "startPrdDe": start, "endPrdDe": end, "orgId": org_id, "tblId": tbl_id}
-
-    last_err = f"{tbl_id} 모든 시도 실패"
-
-    # 1) Param API — itmId 후보 순서대로 시도
-    param_ep = "https://kosis.kr/openapi/Param/statisticsParameterData.do"
-    for itm_id in ("T10", "T", "ALL", "T20", "T30"):
-        rows = _kosis_raw(param_ep, {**base, "itmId": itm_id})
-        if rows is not None:
-            return rows, f"OK Param/{tbl_id} itmId={itm_id} ({len(rows)}행)"
-        last_err = f"Param API 오류(itmId={itm_id}) for {tbl_id}"
-
-    # 2) Share API 엔드포인트 (statisticsData.do) — Param API 실패 시 대안
-    share_ep = "https://kosis.kr/openapi/statisticsData.do"
-    for itm_id in ("T10", "T", "ALL"):
-        rows = _kosis_raw(share_ep, {**base, "itmId": itm_id})
-        if rows is not None:
-            return rows, f"OK Share/{tbl_id} itmId={itm_id} ({len(rows)}행)"
-        last_err = f"Share API 오류(itmId={itm_id}) for {tbl_id}"
-
-    # 3) 메타데이터 조회로 실제 itmId 확인 후 재시도
-    meta = _kosis_get_meta(org_id, tbl_id)
-    _cache[f"kosis_meta_{tbl_id}"] = meta
-    for itm_id in meta.get("itmIds", []):
-        for ep in (param_ep, share_ep):
-            rows = _kosis_raw(ep, {**base, "itmId": itm_id})
-            if rows is not None:
-                return rows, f"OK meta/{tbl_id} itmId={itm_id} ({len(rows)}행)"
-        last_err = f"meta 시도 실패(itmId={itm_id}) for {tbl_id}"
-
-    return None, last_err
-
-
-def _kosis_item_name(row: dict) -> str:
-    """KOSIS 응답 row에서 품목명 추출 (테이블마다 필드명이 다름)."""
-    return (row.get("C1_NM") or row.get("objNm1") or
-            row.get("ITM_NM") or row.get("itmNm") or "")
-
-
-def _kosis_browse(parent_id: str, vw_cd: str = "MT_ZTITLE") -> list[dict]:
-    """KOSIS 통계목록 API에서 특정 parentListId의 자식 노드 조회."""
-    import urllib.request, urllib.parse, json as _json
-
-    params: dict = {"method": "getList", "apiKey": _KOSIS_KEY,
-                    "vwCd": vw_cd, "format": "json", "jsonVD": "Y"}
-    if parent_id:
-        params["parentListId"] = parent_id
-    try:
-        url = f"https://kosis.kr/openapi/statisticsList.do?{urllib.parse.urlencode(params)}"
-        req = urllib.request.Request(url, headers={"User-Agent": "iran-oil-app/1.0"})
-        with urllib.request.urlopen(req, timeout=10) as r:
-            data = _json.loads(r.read().decode("utf-8"))
-        return data if isinstance(data, list) else []
-    except Exception:
-        return []
-
-
-def _kosis_list_price_tables() -> list[str]:
-    """KOSIS 통계목록 트리를 탐색해 생활물가/소비자물가 품목별 테이블 ID 목록 반환."""
-    found_tbls: list[str] = []
-    found_nodes: list[str] = []
-
-    # 1단계: 최상위 카테고리 조회 (parentListId 없음)
-    roots = _kosis_browse("")
-    if not roots:
-        roots = _kosis_browse("0")
-
-    # 물가 관련 최상위 노드 찾기
-    price_roots: list[dict] = []
-    for node in roots:
-        nm  = node.get("TBL_NM", "") or node.get("LIST_NM", "") or node.get("NM", "")
-        lid = node.get("LIST_ID", "") or node.get("TBL_ID", "")
-        if any(kw in nm for kw in ("물가", "가격")):
-            price_roots.append(node)
-            found_nodes.append(f"{lid}:{nm}")
-
-    # 2단계: 물가 노드 아래 탐색 (최대 2레벨)
-    for root in price_roots:
-        lid = root.get("LIST_ID", "") or root.get("TBL_ID", "")
-        if not lid:
-            continue
-        children = _kosis_browse(lid)
-        for child in children:
-            cnm  = child.get("TBL_NM", "") or child.get("LIST_NM", "") or child.get("NM", "")
-            ctid = child.get("TBL_ID", "")
-            clid = child.get("LIST_ID", "")
-            found_nodes.append(f"{ctid or clid}:{cnm}")
-            if ctid and any(kw in cnm for kw in ("생활물가", "품목")):
-                found_tbls.append(ctid)
-            # 3레벨 탐색
-            if clid and not ctid:
-                grandchildren = _kosis_browse(clid)
-                for gc in grandchildren:
-                    gnm  = gc.get("TBL_NM", "") or gc.get("LIST_NM", "")
-                    gtid = gc.get("TBL_ID", "")
-                    if gtid:
-                        found_nodes.append(f"{gtid}:{gnm}")
-                        if any(kw in gnm for kw in ("생활물가", "품목")):
-                            found_tbls.append(gtid)
-
-    _cache["kosis_browse_nodes"] = found_nodes[:30]
-    return found_tbls
-
-
-def _load_prices_from_kosis() -> dict | None:
-    """KOSIS API로 생활물가지수/소비자물가지수 품목별 월별 데이터 수집.
-    C1_NM에 품목명(라면·달걀 등)이 있는 테이블을 찾는다."""
-    if not _KOSIS_KEY:
-        return None
-
-    # 1순위: 환경변수로 직접 지정한 테이블
-    # 2순위: 통계목록 API로 탐색한 테이블들
-    # 3순위: DT_1J22003 인근 번호 일괄 시도 (DT_1J22003 = 시도별이므로 제외)
-    # 통계목록 탐색으로 확인된 정확한 테이블 ID 목록 (2026-07 기준)
-    # DT_1J22005 = 생활물가지수(2020=100)  ← 첫 번째 시도
-    # DT_1J22112 = 품목별 소비자물가지수(품목성질별: 2020=100)
-    # DT_1J22001 = 지출목적별 소비자물가지수(품목포함, 2020=100)
-    env_tbl  = _KOSIS_PRICES_TBL if _KOSIS_PRICES_TBL not in (
-        "DT_1J22003", "DT_1J22017") else ""
-    api_tbls = _kosis_list_price_tables()
-    confirmed_tbls = ["DT_1J22005", "DT_1J22112", "DT_1J22001"]
-
-    tbl_candidates = list(dict.fromkeys(
-        ([env_tbl] if env_tbl else []) + confirmed_tbls + api_tbls
-    ))
-    _cache["kosis_list_found_tbls"] = api_tbls
-
-    rows, msg = None, ""
-    for tbl in tbl_candidates:
-        candidate_rows, candidate_msg = _kosis_get(_KOSIS_PRICES_ORG, tbl, "202101")
-        if candidate_rows is None:
-            msg = candidate_msg
-            continue
-        # 이 테이블에 품목명(라면·달걀·계란 등)이 실제로 있는지 확인
-        sample_names = {_kosis_item_name(r) for r in candidate_rows[:100]}
-        matched_keys = [k for k in _KOSIS_NAME_MAP if any(k in nm for nm in sample_names)]
-        if len(matched_keys) >= 3:  # 최소 3개 키워드 매칭
-            rows = candidate_rows
-            _cache["kosis_prices_tbl_used"] = tbl
-            _cache["kosis_prices_sample_names"] = list(sample_names)[:15]
-            _cache["kosis_prices_matched_keys"] = matched_keys
-            break
-        else:
-            msg = f"{tbl} 품목 불일치 (매칭={matched_keys}, 샘플={list(sample_names)[:5]})"
-
-    if rows is None:
-        _cache["kosis_prices_err"] = msg
-        return None
-
-    item_month: dict[str, dict[str, float]] = {}
-    for row in rows:
-        nm  = _kosis_item_name(row)
-        prd = row.get("PRD_DE", "")
-        if len(prd) != 6:
-            continue
-        month = f"{prd[:4]}-{prd[4:]}"
-        try:
-            val = float(row.get("DT", ""))
-        except (ValueError, TypeError):
-            continue
-        matched = next((v for k, v in _KOSIS_NAME_MAP.items() if k in nm), None)
-        if matched:
-            item_month.setdefault(matched, {})[month] = val
-
-    if len(item_month) < 5:  # 품목 5개 미만이면 잘못된 응답
-        _cache["kosis_prices_err"] = f"품목 매칭 {len(item_month)}개만 성공 (5개 이상 필요)"
-        return None
-
-    months = sorted({m for d in item_month.values() for m in d})
-    if len(months) < 12:
-        return None
-
-    items = {name: [d.get(m) for m in months] for name, d in item_month.items()}
-    annual = {
-        name: {
-            yr: round(
-                sum(v for m, v in d.items() if m.startswith(yr)) /
-                max(1, sum(1 for m in d if m.startswith(yr))), 1
-            )
-            for yr in ["2021", "2022", "2023", "2024", "2025"]
-            if any(m.startswith(yr) for m in d)
-        }
-        for name, d in item_month.items()
-    }
-    return {"months": months, "items": items, "annual": annual}
-
-
-def _load_cpi_from_kosis() -> dict | None:
-    """KOSIS API로 소비자물가지수 총지수(전국) 월별 데이터 수집.
-    DT_1J22003 = 소비자물가지수(2020=100) 시도별 → 전국 행만 필터."""
-    if not _KOSIS_KEY:
-        return None
-
-    # DT_1J22003이 소비자물가지수 시도별 테이블임을 확인 완료
-    tbl_candidates = list(dict.fromkeys([
-        "DT_1J22003",
-        _KOSIS_CPI_TBL if _KOSIS_CPI_TBL != "DT_1J22003" else "",
-        "DT_1J22001", "DT_1400078", "DT_1400079",
-    ]))
-    tbl_candidates = [t for t in tbl_candidates if t]
-
-    rows, msg = None, ""
-    for tbl in tbl_candidates:
-        rows, msg = _kosis_get(_KOSIS_CPI_ORG, tbl, "202101")
-        if rows is not None:
-            _cache["kosis_cpi_tbl_used"] = tbl
-            break
-
-    if rows is None:
-        _cache["kosis_cpi_err"] = msg
-        return None
-
-    month_vals: dict[str, float] = {}
-    for row in rows:
-        prd = row.get("PRD_DE", "")
-        if len(prd) != 6:
-            continue
-        # 시도별 테이블: 전국(C1_NM='전국') 행만 사용
-        area = row.get("C1_NM", "")
-        if area and area not in ("전국", ""):
-            continue
-        month = f"{prd[:4]}-{prd[4:]}"
-        try:
-            val = float(row.get("DT", ""))
-        except (ValueError, TypeError):
-            continue
-        if month not in month_vals:
-            month_vals[month] = val
-
-    if len(month_vals) < 12:
-        return None
-
-    months = sorted(month_vals.keys())
-    return {"months": months, "values": [month_vals[m] for m in months]}
-
-
-# ── 데이터 로더 (KOSIS → Excel → 하드코딩 순 폴백) ──────────────────────────
+# ── 데이터 로더 (Excel → 하드코딩 폴백) ────────────────────────────────────
 
 def _load_prices_data() -> tuple[dict, str]:
-    """생활물가지수: KOSIS API → Excel → 하드코딩 순으로 시도. (데이터, 출처) 반환."""
-    # 1) KOSIS API
-    result = _load_prices_from_kosis()
-    if result:
-        return result, "kosis"
-
-    # 2) 로컬 Excel
+    """생활물가지수: 로컬 Excel → 하드코딩 폴백."""
     xl_path = BASE_DIR / "생활물가지수_2020100__20260607122851.xlsx"
     if xl_path.exists():
         try:
@@ -720,19 +412,11 @@ def _load_prices_data() -> tuple[dict, str]:
             return {"months": months, "items": price_items, "annual": annual}, "excel"
         except Exception:
             pass
-
-    # 3) 하드코딩 폴백
     return {"months": _PRICES_MONTHS_FB, "items": _PRICES_ITEMS_FB, "annual": _PRICES_ANNUAL_FB}, "fallback"
 
 
 def _load_cpi_data() -> tuple[dict, str]:
-    """소비자물가지수: KOSIS API → Excel → 하드코딩 순으로 시도. (데이터, 출처) 반환."""
-    # 1) KOSIS API
-    result = _load_cpi_from_kosis()
-    if result:
-        return result, "kosis"
-
-    # 2) 로컬 Excel
+    """소비자물가지수: 로컬 Excel → 하드코딩 폴백."""
     xl_path = BASE_DIR / "소비자물가지수_2020100__20260607123034.xlsx"
     if xl_path.exists():
         try:
@@ -745,9 +429,8 @@ def _load_cpi_data() -> tuple[dict, str]:
             return {"months": cpi_months, "values": cpi_vals}, "excel"
         except Exception:
             pass
-
-    # 3) 하드코딩 폴백
     return {"months": _CPI_MONTHS_FB, "values": _CPI_VALUES_FB}, "fallback"
+
 
 
 def _load_data():
@@ -1100,47 +783,16 @@ def get_realtime():
 
 @app.get("/api/data-source")
 def get_data_source():
-    """현재 사용 중인 데이터 출처 및 KOSIS API 연결 상태 반환."""
+    """현재 사용 중인 데이터 출처 반환."""
     _load_data()
     sources = _cache.get("sources", {})
-
-    # KOSIS 연결 테스트 (키가 있을 때만, 최근 1개월만 조회)
-    kosis_status = "no_key"
-    kosis_detail = ""
-    kosis_sample = None
-    if _KOSIS_KEY:
-        rows, msg = _kosis_get(_KOSIS_PRICES_ORG, _KOSIS_PRICES_TBL, "202601")
-        if rows is not None:
-            kosis_status = "ok"
-            kosis_detail = msg
-            kosis_sample = rows[:2]  # 응답 구조 확인용 앞 2행
-        else:
-            kosis_status = "error"
-            kosis_detail = msg
-
     return {
-        "kosis_api_key_set": bool(_KOSIS_KEY),
-        "kosis_status":      kosis_status,
-        "kosis_detail":      kosis_detail,
-        "kosis_prices_tbl":  f"{_KOSIS_PRICES_ORG}/{_KOSIS_PRICES_TBL}",
-        "kosis_cpi_tbl":     f"{_KOSIS_CPI_ORG}/{_KOSIS_CPI_TBL}",
-        "kosis_sample":           kosis_sample,
-        "kosis_prices_tbl_used":      _cache.get("kosis_prices_tbl_used"),
-        "kosis_cpi_tbl_used":         _cache.get("kosis_cpi_tbl_used"),
-        "kosis_prices_sample_names":  _cache.get("kosis_prices_sample_names"),
-        "kosis_prices_matched_keys":  _cache.get("kosis_prices_matched_keys"),
-        "kosis_list_found_tbls":      _cache.get("kosis_list_found_tbls"),
-        "kosis_browse_nodes":         _cache.get("kosis_browse_nodes"),
-        "kosis_prices_err":           _cache.get("kosis_prices_err"),
-        "kosis_cpi_err":              _cache.get("kosis_cpi_err"),
-        "kosis_meta_DT_1J22005":      _cache.get("kosis_meta_DT_1J22005"),
         "data_sources": {
             "oil":    sources.get("oil",    "unknown"),
             "prices": sources.get("prices", "unknown"),
             "cpi":    sources.get("cpi",    "unknown"),
         },
         "source_labels": {
-            "kosis":    "KOSIS Open API (통계청 실시간)",
             "excel":    "로컬 Excel 파일 (통계청 다운로드)",
             "yfinance": "Yahoo Finance API",
             "csv":      "로컬 CSV 파일",

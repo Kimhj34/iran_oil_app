@@ -19,7 +19,14 @@
       "PowerShell(Get-NetTCPConnection *)",
       "Bash(python *)",
       "Bash(curl -s http://127.0.0.1:8080/api/auth/login -X POST -H \"Content-Type: application/json\" -d '{\"email\":\"demo@test.com\",\"password\":\"test1234\"}')",
-      "PowerShell(Invoke-RestMethod -Uri \"http://127.0.0.1:8080/api/auth/register\" -Method POST -ContentType \"application/json\" -Body '{\"name\":\"테스트\",\"email\":\"test@test.com\",\"password\":\"1234\"}')"
+      "PowerShell(Invoke-RestMethod -Uri \"http://127.0.0.1:8080/api/auth/register\" -Method POST -ContentType \"application/json\" -Body '{\"name\":\"테스트\",\"email\":\"test@test.com\",\"password\":\"1234\"}')",
+      "Read(//c/Users/kim04/Desktop/**)",
+      "Read(//c/Users/kim04/Downloads/**)",
+      "Bash(git add *)",
+      "Bash(python3 *)",
+      "Bash(pkill -f \"uvicorn main:app\")",
+      "PowerShell(Invoke-RestMethod -Uri \"http://127.0.0.1:8080/api/data-source\" | ConvertTo-Json)",
+      "Bash(git commit -m ' *)"
     ]
   }
 }
