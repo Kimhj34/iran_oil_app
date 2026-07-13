@@ -37,6 +37,10 @@ app = FastAPI(title="이란전쟁 유가 분석")
 # ── JWT 설정 ──
 _SECRET = os.environ.get("SECRET_KEY", "iran-oil-dev-secret-change-in-prod")
 
+# ── KOSIS Open API 설정 ──
+_KOSIS_KEY = os.environ.get("KOSIS_API_KEY", "")
+_KOSIS_EP  = "https://kosis.kr/openapi/Param/statisticsParameterData.do"
+
 _ALGO   = "HS256"
 _TOKEN_HOURS = 24 * 7   # 7일
 
@@ -385,10 +389,70 @@ _CPI_VALUES_FB = _lp([(0,104),(5,107),(11,110),(23,113),(35,116),(47,118),(52,12
 
 
 
-# ── 데이터 로더 (Excel → 하드코딩 폴백) ────────────────────────────────────
+# ── KOSIS API 헬퍼 ──────────────────────────────────────────────────────────
+
+def _kosis_fetch(tbl_id: str, org_id: str, itm_id: str, obj_l1: str,
+                 obj_l2: str = "", start: str = "202201") -> list | None:
+    """KOSIS Param API 단일 호출. 성공 시 row list, 실패 시 None."""
+    import urllib.request, urllib.parse, json as _json
+    params = {
+        "method": "getList", "apiKey": _KOSIS_KEY, "format": "json", "jsonVD": "Y",
+        "prdSe": "M", "startPrdDe": start, "endPrdDe": datetime.now().strftime("%Y%m"),
+        "orgId": org_id, "tblId": tbl_id, "itmId": itm_id, "objL1": obj_l1,
+    }
+    if obj_l2:
+        params["objL2"] = obj_l2
+    try:
+        url = f"{_KOSIS_EP}?{urllib.parse.urlencode(params)}"
+        req = urllib.request.Request(url, headers={"User-Agent": "iran-oil-app/1.0"})
+        with urllib.request.urlopen(req, timeout=15) as r:
+            data = _json.loads(r.read().decode("utf-8"))
+        if isinstance(data, list) and data and "err" not in data[0]:
+            return data
+    except Exception:
+        pass
+    return None
+
+
+# ── 데이터 로더 (KOSIS API → Excel → 하드코딩 폴백) ────────────────────────
 
 def _load_prices_data() -> tuple[dict, str]:
-    """생활물가지수: 로컬 Excel → 하드코딩 폴백."""
+    """생활물가지수: KOSIS API → 로컬 Excel → 하드코딩 폴백."""
+    # 1. KOSIS API (DT_1J22005, objL1=T10, objL2=ALL)
+    if _KOSIS_KEY:
+        rows = _kosis_fetch("DT_1J22005", "101", "T", "T10", "ALL")
+        if rows:
+            from collections import defaultdict
+            kr_rows = [r for r in rows if r.get("C1_NM") == "전국"]
+            months_set = sorted({r["PRD_DE"] for r in kr_rows})
+            months = [f"{m[:4]}-{m[4:]}" for m in months_set]
+            # month→item→value lookup
+            lookup: dict[str, dict[str, float]] = defaultdict(dict)
+            for r in kr_rows:
+                item_nm = r.get("C2_NM", "")
+                prd     = r.get("PRD_DE", "")
+                try:
+                    lookup[prd][item_nm] = float(r["DT"])
+                except (ValueError, TypeError):
+                    pass
+            price_items: dict[str, list] = {}
+            for item_ko in ITEM_ROW_MAP:
+                price_items[item_ko] = [lookup.get(m, {}).get(item_ko) for m in months_set]
+            # 연도별 평균
+            year_sums: dict[str, dict[str, list]] = defaultdict(lambda: defaultdict(list))
+            for prd, item_vals in lookup.items():
+                yr = prd[:4]
+                for item_ko, val in item_vals.items():
+                    if item_ko in ITEM_ROW_MAP:
+                        year_sums[item_ko][yr].append(val)
+            annual = {
+                item: {yr: round(sum(vs)/len(vs), 2) for yr, vs in ymap.items() if vs}
+                for item, ymap in year_sums.items()
+            }
+            matched = sum(1 for v in price_items.values() if any(x is not None for x in v))
+            if len(months) >= 12 and matched >= 6:
+                return {"months": months, "items": price_items, "annual": annual}, "kosis"
+    # 2. 로컬 Excel
     xl_path = BASE_DIR / "생활물가지수_2020100__20260607122851.xlsx"
     if xl_path.exists():
         try:
@@ -416,7 +480,28 @@ def _load_prices_data() -> tuple[dict, str]:
 
 
 def _load_cpi_data() -> tuple[dict, str]:
-    """소비자물가지수: 로컬 Excel → 하드코딩 폴백."""
+    """소비자물가지수: KOSIS API → 로컬 Excel → 하드코딩 폴백."""
+    # 1. KOSIS API (DT_2IFS002, itmId=T001 총지수, 대한민국)
+    if _KOSIS_KEY:
+        rows = _kosis_fetch("DT_2IFS002", "101", "T001", "ALL")
+        if rows:
+            month_vals: dict[str, float] = {}
+            for r in rows:
+                if r.get("ITM_ID") != "T001":
+                    continue
+                if r.get("C1_NM") and r["C1_NM"] not in ("대한민국", ""):
+                    continue
+                prd = r.get("PRD_DE", "")
+                if len(prd) != 6:
+                    continue
+                try:
+                    month_vals[f"{prd[:4]}-{prd[4:]}"] = float(r["DT"])
+                except (ValueError, TypeError):
+                    pass
+            if len(month_vals) >= 12:
+                months = sorted(month_vals.keys())
+                return {"months": months, "values": [month_vals[m] for m in months]}, "kosis"
+    # 2. 로컬 Excel
     xl_path = BASE_DIR / "소비자물가지수_2020100__20260607123034.xlsx"
     if xl_path.exists():
         try:
@@ -787,12 +872,14 @@ def get_data_source():
     _load_data()
     sources = _cache.get("sources", {})
     return {
+        "kosis_api_key_set": bool(_KOSIS_KEY),
         "data_sources": {
             "oil":    sources.get("oil",    "unknown"),
             "prices": sources.get("prices", "unknown"),
             "cpi":    sources.get("cpi",    "unknown"),
         },
         "source_labels": {
+            "kosis":    "KOSIS Open API (통계청 실시간)",
             "excel":    "로컬 Excel 파일 (통계청 다운로드)",
             "yfinance": "Yahoo Finance API",
             "csv":      "로컬 CSV 파일",
