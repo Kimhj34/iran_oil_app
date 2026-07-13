@@ -258,7 +258,7 @@ const COLORS = {
 
 const ITEM_COLORS = {
   '라면':    COLORS.red,
-  '두부':    COLORS.blue,
+  '소고기':  COLORS.blue,
   '우유':    COLORS.green,
   '달걀':    COLORS.yellow,
   '식용유':  COLORS.orange,
@@ -273,7 +273,7 @@ const TAB2_ITEMS = [
   { name: '달걀',   color: COLORS.yellow },
   { name: '우유',   color: COLORS.green  },
   { name: '식용유', color: COLORS.orange },
-  { name: '두부',   color: COLORS.blue   },
+  { name: '소고기', color: COLORS.blue   },
 ];
 
 /* ══════════════════════════════════════════ */
