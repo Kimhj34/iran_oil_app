@@ -655,8 +655,8 @@ async function loadTab2() {
   });
 
   /* 연도별 바 차트 */
-  const years      = ['2021', '2022', '2023', '2024', '2025'];
-  const barColors  = [COLORS.blue, COLORS.teal, COLORS.yellow, COLORS.orange, COLORS.red];
+  const years      = ['2022', '2023', '2024', '2025'];
+  const barColors  = [COLORS.teal, COLORS.yellow, COLORS.orange, COLORS.red];
   const annualItems = ['라면', '달걀', '우유', '식용유'];
 
   const barDatasets = years.map((yr, i) => ({
@@ -685,7 +685,7 @@ async function loadTab2() {
       },
       scales: {
         x: AXIS_OPT.x(),
-        y: { ...AXIS_OPT.y(), min: 90 },
+        y: { ...AXIS_OPT.y(), min: 0 },
       },
     },
   });
