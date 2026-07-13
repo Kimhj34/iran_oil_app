@@ -267,6 +267,15 @@ const ITEM_COLORS = {
   '도시가스': COLORS.pink,
 };
 
+/* 탭2 표시 품목 — 카드·그래프·범례가 이 배열 하나를 공유 */
+const TAB2_ITEMS = [
+  { name: '라면',   color: COLORS.red    },
+  { name: '달걀',   color: COLORS.yellow },
+  { name: '우유',   color: COLORS.green  },
+  { name: '식용유', color: COLORS.orange },
+  { name: '두부',   color: COLORS.blue   },
+];
+
 /* ══════════════════════════════════════════ */
 /* 랜딩 페이지 ↔ 메인 앱 전환                  */
 /* ══════════════════════════════════════════ */
@@ -581,25 +590,23 @@ async function loadTab2() {
 
   /* KPI 카드 */
   const kpi = data.kpi ?? {};
-  const tab2Items = ['라면', '달걀', '우유', '식용유', '두부'];
-  document.getElementById('tab2-kpi').innerHTML = tab2Items.map(item => `
+  document.getElementById('tab2-kpi').innerHTML = TAB2_ITEMS.map(({ name }) => `
     <div class="kpi-card">
-      <div class="kpi-label">${item}</div>
-      <div class="kpi-value ${(kpi[item] ?? 0) > 0 ? 'up' : 'dn'}">
-        ${(kpi[item] ?? 0) > 0 ? '+' : ''}${kpi[item] ?? 0}%
+      <div class="kpi-label">${name}</div>
+      <div class="kpi-value ${(kpi[name] ?? 0) > 0 ? 'up' : 'dn'}">
+        ${(kpi[name] ?? 0) > 0 ? '+' : ''}${kpi[name] ?? 0}%
       </div>
       <div class="kpi-sub">2022.01 대비</div>
     </div>
   `).join('');
 
   /* 품목별 멀티라인 차트 */
-  const months     = data.months;
-  const items      = data.items;
-  const showItems  = tab2Items;
-  const datasets   = showItems.map(name => ({
+  const months   = data.months;
+  const items    = data.items;
+  const datasets = TAB2_ITEMS.map(({ name, color }) => ({
     label: name,
     data:  items[name],
-    borderColor: ITEM_COLORS[name] || COLORS.blue,
+    borderColor: color,
     borderWidth: 2,
     fill: false,
     tension: 0.3,
