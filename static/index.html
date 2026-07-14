@@ -149,6 +149,7 @@
     <div class="tab-nav-inner">
       <ul class="tab-list">
         <li><button class="tab-btn active" data-tab="tab1">📊 유가 분석</button></li>
+        <li><button class="tab-btn" data-tab="tab-energy">⚡ 에너지·교통비</button></li>
         <li><button class="tab-btn" data-tab="tab2">🛒 물가 변화</button></li>
         <li><button class="tab-btn" data-tab="tab3">🔮 시나리오 예측</button></li>
         <li><button class="tab-btn" data-tab="tab4">🧮 생활비 계산기</button></li>
@@ -202,6 +203,44 @@
           <div class="chart-source">출처: Macrotrends × KOSIS / scikit-learn</div>
         </div>
         <div id="analysis-table" class="loading">분석 결과 불러오는 중...</div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ──────────────────────────────────── -->
+  <!-- 에너지·교통비 탭 -->
+  <!-- ──────────────────────────────────── -->
+  <div id="tab-energy" class="tab-panel">
+    <div class="container">
+
+      <div class="section-title">에너지·교통비 변화율 (2022.01 대비 현재)</div>
+      <div class="kpi-grid" id="tab-energy-kpi">
+        <div class="loading">데이터 불러오는 중...</div>
+      </div>
+
+      <div class="section-title">에너지·교통비 소비자물가지수 추이</div>
+      <div class="chart-card">
+        <div class="chart-header">
+          <div>
+            <div class="chart-title">소비자물가지수 — 에너지·교통비 (2020=100)</div>
+            <div class="chart-sub">전기료 · 도시가스 · 상수도료 · 시내버스 · 도시철도 · 택시</div>
+          </div>
+          <div class="chart-source">출처: 통계청 KOSIS 품목별 소비자물가조사</div>
+        </div>
+        <div class="chart-wrap"><canvas id="chart-energy"></canvas></div>
+      </div>
+
+      <div class="section-title">연도별 비교 (2022–2025)</div>
+      <div class="chart-card">
+        <div class="chart-header">
+          <div>
+            <div class="chart-title">에너지·교통비 연평균 소비자물가지수</div>
+            <div class="chart-sub">2020년 = 100 기준</div>
+          </div>
+          <div class="chart-source">출처: 통계청 KOSIS 소비자물가조사</div>
+        </div>
+        <div class="chart-wrap"><canvas id="chart-energy-annual"></canvas></div>
       </div>
 
     </div>
@@ -551,6 +590,6 @@
 </div>
 
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
-<script src="/static/app.js?v=13"></script>
+<script src="/static/app.js?v=14"></script>
 </body>
 </html>

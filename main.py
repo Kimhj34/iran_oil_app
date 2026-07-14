@@ -13,6 +13,12 @@ import warnings
 warnings.filterwarnings("ignore")
 
 try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
+try:
     import jwt as pyjwt
     _JWT_AVAILABLE = True
 except ImportError:
@@ -391,6 +397,41 @@ _CPI_MONTHS_FB = _PRICES_MONTHS_FB
 _CPI_VALUES_FB = _lp([(0,104),(5,107),(11,110),(23,113),(35,116),(47,118),(52,123)])
 
 
+# ── 에너지·교통비 품목 ──────────────────────────────────────────────────────
+ENERGY_ITEMS = ["전기료", "도시가스", "상수도료", "시내버스료", "도시철도료", "택시료"]
+
+# KOSIS 품목명이 화면 표시명과 다를 수 있는 경우만 정의 (왼쪽: 화면표시, 오른쪽: KOSIS 후보)
+_ENERGY_KOSIS_ALIASES: dict[str, list[str]] = {
+    "시내버스료": ["시내버스료", "시내버스"],
+    "도시철도료": ["도시철도료", "도시철도"],
+    "택시료":    ["택시료", "택시"],
+}
+
+# 하드코딩 폴백 (소비자물가지수 2020=100, 2022-01~2026-05)
+# 실제 인상 이벤트 반영:
+#   전기료  : 2022.10 순차인상(index=9), 2023 대폭인상
+#   도시가스 : 2022.05 급등(index=4)
+#   시내버스료: 2023.08 인상(index=19)
+#   도시철도료: 2023.10 인상(index=21)
+#   택시료  : 2023.02 인상(index=13)
+_ENERGY_FB: dict[str, list] = {
+    "전기료":    _lp([(0,100),(9,104),(11,108),(17,122),(23,126),(35,133),(47,136),(52,141)]),
+    "도시가스":  _lp([(0,103),(4,118),(11,132),(17,134),(23,135),(35,132),(47,130),(52,136)]),
+    "상수도료":  _lp([(0,101),(11,103),(23,106),(35,109),(47,112),(52,115)]),
+    "시내버스료": _lp([(0,101),(11,102),(19,117),(23,119),(35,123),(47,126),(52,129)]),
+    "도시철도료": _lp([(0,100),(11,101),(21,116),(23,117),(35,120),(47,122),(52,126)]),
+    "택시료":    _lp([(0,104),(11,108),(13,128),(23,135),(35,138),(47,140),(52,144)]),
+}
+_ENERGY_ANNUAL_FB: dict[str, dict] = {
+    "전기료":    {"2022": 105, "2023": 127, "2024": 133, "2025": 136},
+    "도시가스":  {"2022": 118, "2023": 134, "2024": 132, "2025": 130},
+    "상수도료":  {"2022": 102, "2023": 104, "2024": 107, "2025": 111},
+    "시내버스료": {"2022": 101, "2023": 108, "2024": 122, "2025": 126},
+    "도시철도료": {"2022": 100, "2023": 104, "2024": 119, "2025": 122},
+    "택시료":    {"2022": 107, "2023": 128, "2024": 137, "2025": 140},
+}
+
+
 
 # ── KOSIS API 헬퍼 ──────────────────────────────────────────────────────────
 
@@ -521,6 +562,158 @@ def _load_cpi_data() -> tuple[dict, str]:
             pass
     return {"months": _CPI_MONTHS_FB, "values": _CPI_VALUES_FB}, "fallback"
 
+
+
+def _parse_energy_rows(rows: list) -> "dict | None":
+    """KOSIS 응답 rows에서 에너지·교통비 품목 시계열을 추출한다.
+    성공 시 {months, items, annual} dict, 실패 시 None."""
+    from collections import defaultdict
+
+    # 전국 데이터 필터 (C1_NM 없는 테이블도 대응)
+    kr_rows = [r for r in rows
+               if r.get("C1_NM", "") in ("전국", "전국(A)", "") or "C1_NM" not in r]
+    if not kr_rows:
+        kr_rows = rows
+
+    months_set = sorted({r["PRD_DE"] for r in kr_rows if len(r.get("PRD_DE", "")) == 6})
+    months = [f"{m[:4]}-{m[4:]}" for m in months_set]
+
+    if len(months) < 12:
+        print(f"[ENERGY]   월별 데이터 {len(months)}개월뿐 (최소 12개월 필요)")
+        return None
+
+    # 품목명 컬럼 자동 감지 (C2_NM, C3_NM, ITM_NM 순서로 시도)
+    item_col: str | None = None
+    for r in kr_rows:
+        for col in ("C2_NM", "C3_NM", "ITM_NM"):
+            if r.get(col):
+                item_col = col
+                break
+        if item_col:
+            break
+
+    if not item_col:
+        print("[ENERGY]   품목명 컬럼 미발견 (C2_NM·C3_NM·ITM_NM 모두 없음)")
+        return None
+
+    print(f"[ENERGY]   품목명 컬럼: {item_col}")
+
+    # month → item_name → value lookup 구성
+    lookup: dict[str, dict[str, float]] = defaultdict(dict)
+    for r in kr_rows:
+        nm  = r.get(item_col, "")
+        prd = r.get("PRD_DE", "")
+        if not nm or len(prd) != 6:
+            continue
+        try:
+            lookup[prd][nm] = float(r["DT"])
+        except (ValueError, TypeError, KeyError):
+            pass
+
+    # 샘플 품목명 출력 (디버그용)
+    if lookup:
+        sample_prd = sorted(lookup.keys())[0]
+        sample_nms = sorted(lookup[sample_prd].keys())
+        print(f"[ENERGY]   샘플 품목 ({sample_prd}): {sample_nms[:15]}")
+
+    # 에너지 품목 값 추출 (aliases 포함)
+    energy_items: dict[str, list] = {}
+    found: list[str] = []
+    for item_ko in ENERGY_ITEMS:
+        aliases = _ENERGY_KOSIS_ALIASES.get(item_ko, [item_ko])
+        vals: list = []
+        hit: str | None = None
+        for m in months_set:
+            val = None
+            for alias in aliases:
+                if alias in lookup.get(m, {}):
+                    val = lookup[m][alias]
+                    if not hit:
+                        hit = alias
+                    break
+            vals.append(val)
+        energy_items[item_ko] = vals
+        if hit:
+            found.append(f"{item_ko}('{hit}')")
+
+    print(f"[ENERGY]   매칭 품목 ({len(found)}/{len(ENERGY_ITEMS)}): {found if found else '없음'}")
+
+    if len(found) < 3:
+        print("[ENERGY]   매칭 품목 3개 미만 → 파싱 실패")
+        return None
+
+    # 연도별 평균 계산
+    year_sums: dict[str, dict[str, list]] = {
+        item: defaultdict(list) for item in ENERGY_ITEMS
+    }
+    for prd, item_vals in lookup.items():
+        yr = prd[:4]
+        for kosis_nm, val in item_vals.items():
+            for item_ko in ENERGY_ITEMS:
+                if kosis_nm in _ENERGY_KOSIS_ALIASES.get(item_ko, [item_ko]):
+                    year_sums[item_ko][yr].append(val)
+                    break
+
+    annual = {
+        item: {
+            yr: round(sum(vs) / len(vs), 1)
+            for yr, vs in ymap.items()
+            if vs
+        }
+        for item, ymap in year_sums.items()
+    }
+
+    return {"months": months, "items": energy_items, "annual": annual}
+
+
+def _load_energy_data() -> "tuple[dict, str]":
+    """에너지·교통비 소비자물가지수 로드.
+
+    KOSIS 통계표: 품목별 소비자물가지수(품목성질별: 2020=100)
+    - orgId=101, tblId=DT_1J22001 (가장 가능성 높은 ID)
+    API 실패 시 하드코딩 폴백 반환.
+    """
+    _FALLBACK = {
+        "months": list(_PRICES_MONTHS_FB),
+        "items":  {k: list(v) for k, v in _ENERGY_FB.items()},
+        "annual": _ENERGY_ANNUAL_FB,
+    }
+
+    if not _KOSIS_KEY:
+        print("[ENERGY] KOSIS_API_KEY 미설정 → 폴백 사용")
+        return _FALLBACK, "fallback"
+
+    # 시도할 파라미터 조합 (tblId, orgId, itmId, objL1, objL2)
+    candidates = [
+        ("DT_1J22001", "101", "T",   "ALL", "ALL"),
+        ("DT_1J22001", "101", "T",   "ALL", ""),
+        ("DT_1J22001", "101", "ALL", "ALL", "ALL"),
+    ]
+
+    for tbl_id, org_id, itm_id, obj_l1, obj_l2 in candidates:
+        print(f"[ENERGY] KOSIS 시도: tblId={tbl_id} itmId={itm_id} objL1={obj_l1} objL2={obj_l2 or '(없음)'}")
+        rows = _kosis_fetch(tbl_id, org_id, itm_id, obj_l1, obj_l2)
+
+        if rows is None:
+            print("[ENERGY]   → 응답 없음 (네트워크 오류 또는 잘못된 파라미터)")
+            continue
+        if not rows:
+            print("[ENERGY]   → 빈 배열 (통계표 ID·기간 문제 가능성)")
+            continue
+        if isinstance(rows[0], dict) and rows[0].get("err"):
+            print(f"[ENERGY]   → API 오류 코드: {rows[0].get('err')} / {rows[0].get('errMsg', '')}")
+            continue
+
+        print(f"[ENERGY]   → {len(rows)}행 수신, 파싱 시작")
+        result = _parse_energy_rows(rows)
+        if result:
+            print(f"[ENERGY] ✅ KOSIS 데이터 로드 성공 ({len(result['months'])}개월)")
+            return result, "kosis"
+        print("[ENERGY]   → 에너지 품목 매칭 실패, 다음 파라미터 시도")
+
+    print("[ENERGY] 모든 KOSIS 시도 실패 → 폴백 사용")
+    print("[ENERGY] 확인사항: kosis.kr에서 실제 tblId 조회 필요 (물가 > 소비자물가조사)")
+    return _FALLBACK, "fallback"
 
 
 def _load_data():
@@ -915,6 +1108,42 @@ def get_analysis():
         "r2_threshold": 0.05,
         "sklearn_available": _SK_AVAILABLE,
         "items": rows,
+    }
+
+
+@app.get("/api/energy-costs")
+def get_energy_costs():
+    """에너지·교통비 소비자물가지수 반환 (KOSIS API 우선, 실패 시 폴백).
+
+    KOSIS_API_KEY 환경변수가 설정돼 있어야 실시간 데이터를 가져온다.
+    키가 없거나 API 오류 시 하드코딩 추정값을 반환한다.
+    """
+    _load_data()
+    # 에너지 데이터는 첫 호출 시 지연 로드 (startup 부하 분산)
+    if "energy" not in _cache:
+        data, src = _load_energy_data()
+        _cache["energy"] = data
+        _cache.setdefault("sources", {})["energy"] = src
+
+    data   = _cache["energy"]
+    months = data["months"]
+    items  = data["items"]
+
+    # KPI: 2022-01 대비 현재 변화율
+    kpi: dict[str, float] = {}
+    for item in ENERGY_ITEMS:
+        vals = [v for v in (items.get(item) or []) if v is not None]
+        if len(vals) >= 2:
+            kpi[item] = round((vals[-1] - vals[0]) / vals[0] * 100, 1)
+        else:
+            kpi[item] = 0.0
+
+    return {
+        "months": months,
+        "items":  items,
+        "annual": data.get("annual", {}),
+        "kpi":    kpi,
+        "source": _cache.get("sources", {}).get("energy", "fallback"),
     }
 
 

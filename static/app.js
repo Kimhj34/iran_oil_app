@@ -347,6 +347,7 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
     if (btn.dataset.tab === 'tab1' && !tab1Loaded) loadTab1().catch(e => console.error(e));
     if (btn.dataset.tab === 'tab2' && !tab2Loaded) loadTab2().catch(e => console.error(e));
     if (btn.dataset.tab === 'tab3' && !tab3Loaded) loadTab3().catch(e => console.error(e));
+    if (btn.dataset.tab === 'tab-energy' && !tabEnergyLoaded) loadTabEnergy().catch(e => console.error(e));
     if (btn.dataset.tab === 'tab4' && !tab4Loaded) loadTab4().catch(e => console.error(e));
     if (btn.dataset.tab === 'tab6') loadTab6();
   });
@@ -682,6 +683,144 @@ async function loadTab2() {
           labels: { color: TICK_COLOR, font: { size: 11 }, boxWidth: 12, padding: 10 },
         },
         tooltip: { callbacks: { label: ctx => `${ctx.dataset.label}: ${ctx.raw?.toFixed(1) ?? '-'}` } },
+      },
+      scales: {
+        x: AXIS_OPT.x(),
+        y: { ...AXIS_OPT.y(), min: 0 },
+      },
+    },
+  });
+}
+
+/* ══════════════════════════════════════════ */
+/* 에너지·교통비 탭                             */
+/* ══════════════════════════════════════════ */
+let tabEnergyLoaded = false;
+let chartEnergy     = null;
+let chartEnergyAnn  = null;
+
+const ENERGY_TAB_ITEMS = [
+  { name: '전기료',    color: COLORS.yellow },
+  { name: '도시가스',  color: COLORS.orange },
+  { name: '상수도료',  color: COLORS.blue   },
+  { name: '시내버스료', color: COLORS.green  },
+  { name: '도시철도료', color: COLORS.teal   },
+  { name: '택시료',   color: COLORS.red    },
+];
+
+async function loadTabEnergy() {
+  tabEnergyLoaded = true;
+  let data;
+  try {
+    const res = await fetch('/api/energy-costs');
+    if (!res.ok) throw new Error(`/api/energy-costs ${res.status}`);
+    data = await res.json();
+  } catch (err) {
+    document.getElementById('tab-energy-kpi').innerHTML =
+      `<div class="loading" style="color:#EF4444">데이터 로딩 실패: ${err.message}</div>`;
+    return;
+  }
+
+  /* KPI 카드 */
+  const kpi      = data.kpi ?? {};
+  const srcLabel = data.source === 'kosis' ? 'KOSIS 실시간' : '추정값';
+  document.getElementById('tab-energy-kpi').innerHTML = ENERGY_TAB_ITEMS.map(({ name }) => `
+    <div class="kpi-card">
+      <div class="kpi-label">${name}</div>
+      <div class="kpi-value ${(kpi[name] ?? 0) >= 0 ? 'up' : 'dn'}">
+        ${(kpi[name] ?? 0) >= 0 ? '+' : ''}${kpi[name] ?? 0}%
+      </div>
+      <div class="kpi-sub">2022.01 대비 (${srcLabel})</div>
+    </div>
+  `).join('');
+
+  /* 멀티라인 차트 */
+  const months   = data.months ?? [];
+  const items    = data.items  ?? {};
+  const datasets = ENERGY_TAB_ITEMS.map(({ name, color }) => ({
+    label:       name,
+    data:        items[name] ?? [],
+    borderColor: color,
+    borderWidth: 2,
+    fill:        false,
+    tension:     0.3,
+    pointRadius: 0,
+    pointHoverRadius: 4,
+  }));
+
+  if (chartEnergy) chartEnergy.destroy();
+  chartEnergy = new Chart(document.getElementById('chart-energy'), {
+    type: 'line',
+    data: { labels: months, datasets },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: {
+          display: true,
+          position: 'top',
+          labels: { color: TICK_COLOR, font: { size: 11 }, boxWidth: 12, padding: 12 },
+        },
+        tooltip: {
+          callbacks: { label: ctx => `${ctx.dataset.label}: ${ctx.raw?.toFixed(1) ?? '-'}` },
+        },
+      },
+      scales: {
+        x: AXIS_OPT.x({ maxTicksLimit: 12 }),
+        y: AXIS_OPT.y(),
+      },
+    },
+    plugins: [{
+      id: 'baseLine100Energy',
+      beforeDraw(chart) {
+        const { ctx, chartArea, scales } = chart;
+        if (!chartArea) return;
+        const y100 = scales.y.getPixelForValue(100);
+        ctx.save();
+        ctx.strokeStyle = 'rgba(107,114,128,0.4)';
+        ctx.setLineDash([4, 4]);
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(chartArea.left,  y100);
+        ctx.lineTo(chartArea.right, y100);
+        ctx.stroke();
+        ctx.restore();
+      },
+    }],
+  });
+
+  /* 연도별 바 차트 */
+  const years     = ['2022', '2023', '2024', '2025'];
+  const barColors = [COLORS.teal, COLORS.yellow, COLORS.orange, COLORS.red];
+  const annLabels = ENERGY_TAB_ITEMS.map(({ name }) => name);
+  const annual    = data.annual ?? {};
+
+  const barDatasets = years.map((yr, i) => ({
+    label:           `${yr}년`,
+    data:            annLabels.map(item => annual[item]?.[yr] ?? null),
+    backgroundColor: barColors[i] + 'BB',
+    borderColor:     barColors[i],
+    borderWidth:     1,
+    borderRadius:    4,
+  }));
+
+  if (chartEnergyAnn) chartEnergyAnn.destroy();
+  chartEnergyAnn = new Chart(document.getElementById('chart-energy-annual'), {
+    type: 'bar',
+    data: { labels: annLabels, datasets: barDatasets },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: {
+          display: true,
+          position: 'top',
+          labels: { color: TICK_COLOR, font: { size: 11 }, boxWidth: 12, padding: 10 },
+        },
+        tooltip: {
+          callbacks: { label: ctx => `${ctx.dataset.label}: ${ctx.raw?.toFixed(1) ?? '-'}` },
+        },
       },
       scales: {
         x: AXIS_OPT.x(),
