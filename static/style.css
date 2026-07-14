@@ -1122,3 +1122,59 @@ body {
 }
 .form-switch a { color:var(--primary); text-decoration:none; font-weight:600; }
 .form-switch a:hover { text-decoration:underline; }
+
+/* ══ 모바일 반응형 ══════════════════════════════════════════════════════ */
+@media (max-width:640px) {
+  /* 헤더 */
+  .header-inner { padding:0 16px; height:56px; }
+  .logo-text { font-size:14px; }
+  .logo-emoji { font-size:18px; }
+  .header-right { gap:8px; }
+  .btn-header { padding:6px 12px; font-size:12px; }
+
+  /* 탭 네비 — 가로 스크롤 */
+  .tab-nav { top:56px; }
+  .tab-nav-inner { padding:0 0; overflow-x:auto; -webkit-overflow-scrolling:touch; }
+  .tab-nav-inner .tab-list { flex:none; padding:0 8px; }
+  .tab-btn { padding:12px 14px; font-size:13px; }
+
+  /* 컨테이너 */
+  .container { padding:0 14px; }
+  .tab-panel { padding:20px 0 48px; }
+
+  /* KPI 카드 — 2열 */
+  .kpi-grid { grid-template-columns:1fr 1fr; gap:10px; }
+  .kpi-value { font-size:22px; }
+  .kpi-card { padding:14px 16px; }
+
+  /* 차트 컨테이너 */
+  .chart-box { padding:16px 12px; }
+
+  /* 시나리오 카드 */
+  .sc-cards { grid-template-columns:1fr 1fr; }
+  .scenario-btns { gap:8px; }
+  .scenario-btn { padding:12px 8px; font-size:13px; }
+
+  /* 품목 카드 그리드 — 2열 */
+  .items-grid { grid-template-columns:1fr 1fr; }
+
+  /* 계산기 */
+  .calc-inputs { grid-template-columns:1fr 1fr; }
+  .calc-result-box { padding:20px 16px; }
+
+  /* 섹션 타이틀 */
+  .section-title { font-size:10px; margin:20px 0 12px; }
+
+  /* 뉴스 티커 — 작게 */
+  .ticker-text { font-size:12px; }
+  .ticker-badge { font-size:10px; padding:3px 7px; }
+}
+
+@media (max-width:400px) {
+  /* 극소형 화면(구형 폰) */
+  .kpi-grid { grid-template-columns:1fr; }
+  .sc-cards { grid-template-columns:1fr; }
+  .items-grid { grid-template-columns:1fr; }
+  .calc-inputs { grid-template-columns:1fr; }
+  .tab-btn { padding:10px 12px; font-size:12px; }
+}
