@@ -582,21 +582,30 @@ def _parse_energy_rows(rows: list) -> "dict | None":
         print(f"[ENERGY]   월별 데이터 {len(months)}개월뿐 (최소 12개월 필요)")
         return None
 
-    # 품목명 컬럼 자동 감지 (C2_NM, C3_NM, ITM_NM 순서로 시도)
+    # 응답 샘플의 컬럼명 전체 출력 (어떤 컬럼이 있는지 파악)
+    if kr_rows:
+        sample_keys = list(kr_rows[0].keys())
+        print(f"[ENERGY]   응답 컬럼 목록: {sample_keys}")
+
+    # 품목명 컬럼 자동 감지: 에너지 품목명이 실제로 들어있는 컬럼 우선
+    target_nms = {"전기료", "도시가스", "상수도료", "시내버스", "도시철도", "택시"}
     item_col: str | None = None
-    for r in kr_rows:
-        for col in ("C2_NM", "C3_NM", "ITM_NM"):
-            if r.get(col):
-                item_col = col
-                break
-        if item_col:
+    for col in ("C2_NM", "C3_NM", "C4_NM", "ITM_NM"):
+        sample_vals = {r.get(col, "") for r in kr_rows[:50]}
+        if sample_vals & target_nms:          # 교집합이 있으면 이 컬럼 사용
+            item_col = col
+            print(f"[ENERGY]   품목명 컬럼 (타겟 매칭): {col}")
             break
+    if not item_col:
+        for col in ("C2_NM", "C3_NM", "C4_NM", "ITM_NM"):
+            if any(r.get(col) for r in kr_rows[:5]):
+                item_col = col
+                print(f"[ENERGY]   품목명 컬럼 (첫 번째 비어 있지 않은): {col}")
+                break
 
     if not item_col:
-        print("[ENERGY]   품목명 컬럼 미발견 (C2_NM·C3_NM·ITM_NM 모두 없음)")
+        print("[ENERGY]   품목명 컬럼 미발견 (C2_NM·C3_NM·C4_NM·ITM_NM 모두 없음)")
         return None
-
-    print(f"[ENERGY]   품목명 컬럼: {item_col}")
 
     # month → item_name → value lookup 구성
     lookup: dict[str, dict[str, float]] = defaultdict(dict)
@@ -684,10 +693,12 @@ def _load_energy_data() -> "tuple[dict, str]":
         return _FALLBACK, "fallback"
 
     # 시도할 파라미터 조합 (tblId, orgId, itmId, objL1, objL2)
+    # DT_1J22112: 품목별 소비자물가지수(품목성질별, 2020=100) — 확인된 tblId
+    # T10 = 전국, ALL = 전 품목
     candidates = [
-        ("DT_1J22001", "101", "T",   "ALL", "ALL"),
-        ("DT_1J22001", "101", "T",   "ALL", ""),
-        ("DT_1J22001", "101", "ALL", "ALL", "ALL"),
+        ("DT_1J22112", "101", "T",   "T10",  "ALL"),  # 확인된 파라미터
+        ("DT_1J22112", "101", "T",   "T10",  ""),     # objL2 없이
+        ("DT_1J22112", "101", "T",   "ALL",  "ALL"),  # fallback
     ]
 
     for tbl_id, org_id, itm_id, obj_l1, obj_l2 in candidates:
@@ -712,7 +723,7 @@ def _load_energy_data() -> "tuple[dict, str]":
         print("[ENERGY]   → 에너지 품목 매칭 실패, 다음 파라미터 시도")
 
     print("[ENERGY] 모든 KOSIS 시도 실패 → 폴백 사용")
-    print("[ENERGY] 확인사항: kosis.kr에서 실제 tblId 조회 필요 (물가 > 소비자물가조사)")
+    print("[ENERGY] /api/energy-debug 엔드포인트로 원시 응답을 확인하세요")
     return _FALLBACK, "fallback"
 
 
