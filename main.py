@@ -450,12 +450,22 @@ def _kosis_fetch(tbl_id: str, org_id: str, itm_id: str, obj_l1: str,
         url = f"{_KOSIS_EP}?{urllib.parse.urlencode(params)}"
         req = urllib.request.Request(url, headers={"User-Agent": "iran-oil-app/1.0"})
         with urllib.request.urlopen(req, timeout=15) as r:
-            data = _json.loads(r.read().decode("utf-8"))
-        if isinstance(data, list) and data and "err" not in data[0]:
+            raw = r.read().decode("utf-8")
+        data = _json.loads(raw)
+        if isinstance(data, dict):
+            print(f"[KOSIS] 응답이 dict (오류 가능): {str(data)[:200]}")
+            return None
+        if isinstance(data, list) and data:
+            first = data[0]
+            if isinstance(first, dict) and first.get("err"):
+                print(f"[KOSIS] API 오류: err={first.get('err')} msg={first.get('errMsg','')}")
+                return None
             return data
-    except Exception:
-        pass
-    return None
+        print(f"[KOSIS] 빈 응답 또는 예상치 못한 형식: {type(data)}")
+        return None
+    except Exception as e:
+        print(f"[KOSIS] 요청 실패 ({tbl_id}): {type(e).__name__}: {e}")
+        return None
 
 
 # ── 데이터 로더 (KOSIS API → Excel → 하드코딩 폴백) ────────────────────────
@@ -723,7 +733,6 @@ def _load_energy_data() -> "tuple[dict, str]":
         print("[ENERGY]   → 에너지 품목 매칭 실패, 다음 파라미터 시도")
 
     print("[ENERGY] 모든 KOSIS 시도 실패 → 폴백 사용")
-    print("[ENERGY] /api/energy-debug 엔드포인트로 원시 응답을 확인하세요")
     return _FALLBACK, "fallback"
 
 
